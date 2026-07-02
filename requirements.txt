@@ -1,0 +1,7 @@
+fastapi
+uvicorn
+rpy2
+openai
+python-multipart
+python-dotenv
+streamlit
