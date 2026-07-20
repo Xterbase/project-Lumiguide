@@ -112,7 +112,7 @@ def _render_position_result(result: dict) -> None:
 
 def render_upload_tab(output_dir: Path) -> None:
     """
-    Upload & Inspect 탭을 렌더링한다.
+    Data Upload & Inspect 탭을 렌더링한다.
 
     역할:
         1. BIN/RDA/RData 파일 업로드
@@ -121,7 +121,7 @@ def render_upload_tab(output_dir: Path) -> None:
         4. current_sample, position_result를 session_state에 저장
     """
 
-    st.header("1. Upload & Inspect")
+    st.header("1. Data Upload & Inspect")
     st.caption("BIN/RDA/RData 파일을 업로드하고 POSITION 정보를 확인합니다.")
 
     output_dir = Path(output_dir)

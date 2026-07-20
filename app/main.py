@@ -77,7 +77,7 @@ with st.sidebar:
         """
         **Workflow**
 
-        1. Data Upload  
+        1. Data Upload & Inspect  
         2. Signal Analysis  
         3. SAR Analysis  
         4. De Distribution  
@@ -100,7 +100,7 @@ with st.sidebar:
 # (De Distribution 탭이 빠져 있어서 Model Recommendation이 4번으로 밀려 있었다)
 tab_upload, tab_signal, tab_sar, tab_de, tab_model = st.tabs(
     [
-        "1. Data Upload",
+        "1. Data Upload & Inspect",
         "2. Signal Analysis",
         "3. SAR Analysis",
         "4. De Distribution",

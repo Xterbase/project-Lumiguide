@@ -159,13 +159,13 @@ def render_sar_tab() -> None:
     sample = get_current_sample()
 
     if sample is None:
-        st.warning("먼저 `Upload & Inspect` 탭에서 BIN/RDA 파일을 업로드하세요.")
+        st.warning("먼저 `Data Upload & Inspect` 탭에서 BIN/RDA 파일을 업로드하세요.")
         return
 
     position_result = get_position_result()
 
     if position_result is None:
-        st.warning("먼저 `Upload & Inspect` 탭에서 POSITION을 확인하세요.")
+        st.warning("먼저 `Data Upload & Inspect` 탭에서 POSITION을 확인하세요.")
         return
 
     params = _require_signal_params()

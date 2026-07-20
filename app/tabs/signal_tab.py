@@ -28,7 +28,7 @@ def require_sample():
     sample = get_current_sample()
 
     if sample is None:
-        st.warning("먼저 `Upload & Inspect` 탭에서 BIN/RDA 파일을 업로드하세요.")
+        st.warning("먼저 `Data Upload & Inspect` 탭에서 BIN/RDA 파일을 업로드하세요.")
         return None
 
     return sample
@@ -38,7 +38,7 @@ def require_position_result():
     result = get_position_result()
 
     if result is None:
-        st.warning("먼저 `Upload & Inspect` 탭에서 POSITION 확인을 실행하세요.")
+        st.warning("먼저 `Data Upload & Inspect` 탭에서 POSITION 확인을 실행하세요.")
         return None
 
     return result
