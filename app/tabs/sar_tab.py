@@ -20,6 +20,11 @@ from utils.state_manager import (
 )
 
 
+# POSITION 목록 맨 위에 넣는 전체 선택 항목.
+# POSITION은 정수라 문자열 항목과 섞여도 값이 충돌하지 않는다.
+SELECT_ALL = "전체 선택"
+
+
 def _require_signal_params():
     """
     SAR은 Signal 단계에서 정한 integral 없이는 돌릴 수 없다.
@@ -169,10 +174,17 @@ def render_sar_tab() -> None:
         return
 
     st.caption(
-        f"Signal integral `{params['signal_integral']}` / "
-        f"Background integral `{params['background_integral']}` "
-        f"(POSITION {params['reference_position']}의 곡선을 보고 정한 값)"
+        "Signal Analysis에서 설정한 integral을 사용하여 "
+        "선택한 POSITION에 대해 SAR 분석을 수행합니다."
     )
+
+    st.markdown(
+        f"**사용자 설정 값:**　"
+        f"Signal integral `{params['signal_integral']}`　/　"
+        f"Background integral `{params['background_integral']}`"
+    )
+
+    st.caption(f"POSITION {params['reference_position']}의 곡선을 보고 정한 값입니다.")
 
     st.divider()
 
@@ -183,17 +195,28 @@ def render_sar_tab() -> None:
 
     st.subheader("분석 대상 POSITION")
 
-    selected = st.multiselect(
+    # 기본값을 전체로 두면 무심코 실행했을 때 전 POSITION이 돌아간다.
+    # 비워두고, 대신 목록 맨 위에 전체 선택 항목을 둔다.
+    picked = st.multiselect(
         "SAR을 돌릴 POSITION",
-        options=available,
-        default=get_sar_target_positions() or available,
-        help="De 분포를 만들려면 aliquot이 여러 개 필요합니다. 기본값은 전체입니다.",
+        options=[SELECT_ALL] + list(available),
+        default=[],
+        placeholder="(선택 안 함)",
+        help="De 분포를 만들려면 aliquot이 여러 개 필요합니다.",
         key="sar_target_positions_input",
     )
+
+    if SELECT_ALL in picked:
+        selected = list(available)
+    else:
+        selected = picked
 
     if not selected:
         st.info("POSITION을 하나 이상 선택하세요.")
         return
+
+    if SELECT_ALL in picked:
+        st.caption(f"전체 {len(selected)}개 POSITION이 선택되었습니다.")
 
     if st.button("SAR 분석 실행", type="primary"):
         set_sar_target_positions(selected)
