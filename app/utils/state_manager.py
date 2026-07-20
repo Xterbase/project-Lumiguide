@@ -19,6 +19,8 @@ RLUM_RECORDS_KEY = "rlum_records"
 SELECTED_RECORD_INFO_KEY = "selected_record_info"
 RLUM_RECORD_PLOT_RESULT_KEY = "rlum_record_plot_result"
 SIGNAL_PARAMS_KEY = "signal_params"
+SAR_TARGET_POSITIONS_KEY = "sar_target_positions"
+SAR_RESULT_KEY = "sar_result"
 
 
 
@@ -68,6 +70,14 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
             SIGNAL_PARAMS_KEY: None,
         },
         "output": {},
+    },
+    "sar": {
+        "input": {
+            SAR_TARGET_POSITIONS_KEY: None,
+        },
+        "output": {
+            SAR_RESULT_KEY: None,
+        },
     },
 }
 # 파이프라인 순서 (스키마 정의 순서에서 파생 — 따로 손으로 관리하지 않는다)
@@ -310,6 +320,26 @@ def has_signal_params() -> bool:
     return has_value(SIGNAL_PARAMS_KEY)
 
 
+def set_sar_target_positions(positions: list[int]) -> None:
+    set_value(SAR_TARGET_POSITIONS_KEY, positions)
+
+
+def get_sar_target_positions() -> list[int] | None:
+    return get_value(SAR_TARGET_POSITIONS_KEY)
+
+
+def set_sar_result(result: dict) -> None:
+    set_value(SAR_RESULT_KEY, result)
+
+
+def get_sar_result() -> dict | None:
+    return get_value(SAR_RESULT_KEY)
+
+
+def has_sar_result() -> bool:
+    return has_value(SAR_RESULT_KEY)
+
+
 def reset_signal_state() -> None:
     """
     Signal/Record/SAR setup 상태를 초기화한다.
@@ -319,6 +349,7 @@ def reset_signal_state() -> None:
     reset_stage("signal")
     reset_stage("record")
     reset_stage("sar_setup")
+    reset_stage("sar")
 
 
 def reset_signal_position_outputs() -> None:

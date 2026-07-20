@@ -293,3 +293,92 @@ def generate_rlum_record_plot(
         "record_index": record_index_value,
         "plot_file": plot_file,
     }
+
+
+def run_sar_analysis(
+    path: str | Path,
+    positions: list[int],
+    signal_integral: str,
+    background_integral: str,
+) -> dict:
+    """
+    선택한 POSITION들에 대해 SAR 분석을 일괄 실행하고 De 값을 얻는다.
+
+    R pipeline:
+    - run_sar_analysis(path, positions, signal_integral, background_integral)
+      - integral 문자열 파싱/검증은 R에서 수행
+      - POSITION 하나가 실패해도 나머지는 계속 진행하고, 실패 사유를 따로 반환
+
+    Python return:
+    - aliquots: POSITION별 결과 행 리스트 (De 분포 단계의 입력)
+    - failed:   실패한 POSITION과 사유
+    """
+    load_r_pipeline()
+
+    file_path = Path(path).resolve()
+
+    if not file_path.exists():
+        raise FileNotFoundError(f"업로드 파일을 찾을 수 없습니다: {file_path}")
+
+    if not positions:
+        raise ValueError("분석할 POSITION이 선택되지 않았습니다.")
+
+    with R_LOCK:
+        with default_converter.context():
+            result = ro.r["run_sar_analysis"](
+                file_path.as_posix(),
+                ro.IntVector([int(p) for p in positions]),
+                str(signal_integral),
+                str(background_integral),
+            )
+
+            signal_range = r_int_list(result.rx2("signal_integral"))
+            background_range = r_int_list(result.rx2("background_integral"))
+
+            n_requested = r_scalar_int(result.rx2("n_requested"))
+            n_success = r_scalar_int(result.rx2("n_success"))
+            n_failed = r_scalar_int(result.rx2("n_failed"))
+
+            position_list = r_int_list(result.rx2("position"))
+            de_list = r_float_list(result.rx2("de"))
+            de_error_list = r_float_list(result.rx2("de_error"))
+            rc_status_list = r_str_list(result.rx2("rc_status"))
+            fit_list = r_str_list(result.rx2("fit"))
+            n_n_list = r_float_list(result.rx2("n_n"))
+            recycling_list = r_float_list(result.rx2("recycling_ratio"))
+            recuperation_list = r_float_list(result.rx2("recuperation"))
+
+            failed_position_list = r_int_list(result.rx2("failed_position"))
+            failed_reason_list = r_str_list(result.rx2("failed_reason"))
+
+    aliquots = [
+        {
+            "position": position_list[i],
+            "de": de_list[i],
+            "de_error": de_error_list[i],
+            "rc_status": rc_status_list[i],
+            "fit": fit_list[i],
+            "n_n": n_n_list[i],
+            "recycling_ratio": recycling_list[i],
+            "recuperation": recuperation_list[i],
+        }
+        for i in range(len(position_list))
+    ]
+
+    failed = [
+        {
+            "position": failed_position_list[i],
+            "reason": failed_reason_list[i],
+        }
+        for i in range(len(failed_position_list))
+    ]
+
+    return {
+        "signal_integral": signal_range,
+        "background_integral": background_range,
+        "n_requested": n_requested,
+        "n_success": n_success,
+        "n_failed": n_failed,
+        "aliquots": aliquots,
+        "failed": failed,
+    }

@@ -527,3 +527,225 @@ save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
     plot_file = as.character(normalized_file_path)
   )
 }
+
+
+# ============================================================
+# Version3: SAR analysis
+# ============================================================
+# Signal 단계에서 정한 signal/background integral로 POSITION별 SAR 분석을 돌려
+# De 값을 얻는다. 여기서 나온 De 모음이 다음 단계(De 분포 -> CAM/MAM/FMM)의 입력이다.
+#
+# integral 문자열 파싱
+# ---------------------
+# signal_tab은 "1:2" 같은 자유 입력 문자열을 저장한다. 이건 신뢰 경계라서
+# R로 넘어온 시점에 반드시 검증해야 한다. 검증 실패를 그대로 두면
+# analyse_SAR.CWOSL()이 엉뚱한 채널을 적분하고도 에러 없이 De를 뱉는다.
+.parse_integral <- function(value, label, n_points) {
+  if (is.null(value) || length(value) != 1 || is.na(value) || !nzchar(value)) {
+    stop(paste0(label, "이(가) 비어 있습니다. 예: 1:2"))
+  }
+
+  parts <- strsplit(trimws(as.character(value)), "[:,-]")[[1]]
+  parts <- trimws(parts[nzchar(trimws(parts))])
+
+  if (length(parts) != 2) {
+    stop(paste0(label, " 형식이 올바르지 않습니다: '", value, "' / 예: 1:2"))
+  }
+
+  nums <- suppressWarnings(as.integer(parts))
+
+  if (any(is.na(nums))) {
+    stop(paste0(label, "에 숫자가 아닌 값이 있습니다: '", value, "' / 예: 1:2"))
+  }
+
+  if (nums[1] < 1) {
+    stop(paste0(label, "의 시작 채널은 1 이상이어야 합니다: ", nums[1]))
+  }
+
+  if (nums[1] > nums[2]) {
+    stop(
+      paste0(
+        label, "의 시작이 끝보다 큽니다: ", nums[1], ":", nums[2],
+        " / 예: ", nums[2], ":", nums[1]
+      )
+    )
+  }
+
+  if (!is.na(n_points) && nums[2] > n_points) {
+    stop(
+      paste0(
+        label, "이 측정 채널 수를 넘습니다: ", nums[1], ":", nums[2],
+        " / 이 파일의 채널 수(NPOINTS): ", n_points
+      )
+    )
+  }
+
+  as.integer(nums)
+}
+
+
+# POSITION 하나에 대해 SAR을 돌리고 필요한 값만 뽑는다.
+.run_sar_one <- function(path, pos, signal_integral, background_integral) {
+  found <- .load_position_records(path, pos)
+
+  res <- analyse_SAR.CWOSL(
+    object = found$obj,
+    signal_integral = signal_integral,
+    background_integral = background_integral,
+    plot = FALSE,
+    verbose = FALSE
+  )
+
+  if (is.null(res)) {
+    stop("SAR 분석이 결과를 반환하지 않았습니다.")
+  }
+
+  data <- get_RLum(res, "data")
+
+  if (is.null(data) || nrow(data) == 0) {
+    stop("SAR 결과에 De 값이 없습니다.")
+  }
+
+  # 품질 지표는 rejection.criteria 표에 Criteria/Value 행으로 들어온다.
+  # 기획서가 요구하는 recycling ratio / recuperation을 이름으로 찾아 꺼낸다.
+  rc <- try(get_RLum(res, "rejection.criteria"), silent = TRUE)
+
+  pick_rc <- function(pattern) {
+    if (inherits(rc, "try-error") || is.null(rc) || nrow(rc) == 0) {
+      return(NA_real_)
+    }
+
+    hit <- grep(pattern, rc$Criteria, ignore.case = TRUE)
+
+    if (length(hit) == 0) {
+      return(NA_real_)
+    }
+
+    as.numeric(rc$Value[hit[1]])
+  }
+
+  get_one <- function(col) {
+    if (col %in% colnames(data)) data[[col]][1] else NA
+  }
+
+  list(
+    de = as.numeric(get_one("De")),
+    de_error = as.numeric(get_one("De.Error")),
+    rc_status = as.character(get_one("RC.Status")),
+    fit = as.character(get_one("Fit")),
+    n_n = as.numeric(get_one("n_N")),
+    recycling_ratio = pick_rc("Recycling ratio"),
+    recuperation = pick_rc("Recuperation")
+  )
+}
+
+
+# 여러 POSITION에 대해 SAR을 일괄 실행한다.
+#
+# 한 POSITION이 실패해도 전체를 중단하지 않는다.
+#   De 분포를 만들려면 aliquot이 여러 개 필요한데, 그 중 하나가 fit 실패나
+#   multi-GRAIN으로 막힌다고 나머지 정상 결과까지 버리면 분석이 불가능해진다.
+#   실패한 POSITION은 사유와 함께 따로 모아서 UI가 보여줄 수 있게 반환한다.
+run_sar_analysis <- function(path, positions, signal_integral, background_integral) {
+  loaded <- load_bin_data(path)
+
+  if (is.null(positions) || length(positions) == 0) {
+    stop("분석할 POSITION이 선택되지 않았습니다.")
+  }
+
+  positions <- sort(unique(as.integer(positions)))
+
+  unknown <- setdiff(positions, loaded$positions)
+
+  if (length(unknown) > 0) {
+    stop(
+      paste0(
+        "파일에 없는 POSITION입니다: ",
+        paste(unknown, collapse = ", ")
+      )
+    )
+  }
+
+  metadata <- loaded$metadata
+
+  n_points <- if ("NPOINTS" %in% colnames(metadata)) {
+    suppressWarnings(max(as.integer(metadata$NPOINTS), na.rm = TRUE))
+  } else {
+    NA_integer_
+  }
+
+  if (!is.finite(n_points)) {
+    n_points <- NA_integer_
+  }
+
+  sig <- .parse_integral(signal_integral, "Signal integral", n_points)
+  bg <- .parse_integral(background_integral, "Background integral", n_points)
+
+  ok_position <- integer(0)
+  ok_de <- numeric(0)
+  ok_de_error <- numeric(0)
+  ok_rc_status <- character(0)
+  ok_fit <- character(0)
+  ok_n_n <- numeric(0)
+  ok_recycling <- numeric(0)
+  ok_recuperation <- numeric(0)
+
+  failed_position <- integer(0)
+  failed_reason <- character(0)
+
+  for (pos in positions) {
+    one <- try(
+      .run_sar_one(path, pos, sig, bg),
+      silent = TRUE
+    )
+
+    if (inherits(one, "try-error")) {
+      failed_position <- c(failed_position, pos)
+      failed_reason <- c(
+        failed_reason,
+        trimws(as.character(attr(one, "condition")$message))
+      )
+      next
+    }
+
+    ok_position <- c(ok_position, pos)
+    ok_de <- c(ok_de, one$de)
+    ok_de_error <- c(ok_de_error, one$de_error)
+    ok_rc_status <- c(ok_rc_status, one$rc_status)
+    ok_fit <- c(ok_fit, one$fit)
+    ok_n_n <- c(ok_n_n, one$n_n)
+    ok_recycling <- c(ok_recycling, one$recycling_ratio)
+    ok_recuperation <- c(ok_recuperation, one$recuperation)
+  }
+
+  if (length(ok_position) == 0) {
+    stop(
+      paste0(
+        "선택한 POSITION ", length(positions), "개 전부 SAR 분석에 실패했습니다. ",
+        "첫 번째 사유: ",
+        if (length(failed_reason) > 0) failed_reason[1] else "(사유 없음)"
+      )
+    )
+  }
+
+  list(
+    signal_integral = as.integer(sig),
+    background_integral = as.integer(bg),
+
+    n_requested = as.integer(length(positions)),
+    n_success = as.integer(length(ok_position)),
+    n_failed = as.integer(length(failed_position)),
+
+    position = as.integer(ok_position),
+    de = as.numeric(ok_de),
+    de_error = as.numeric(ok_de_error),
+    rc_status = as.character(ok_rc_status),
+    fit = as.character(ok_fit),
+    n_n = as.numeric(ok_n_n),
+    recycling_ratio = as.numeric(ok_recycling),
+    recuperation = as.numeric(ok_recuperation),
+
+    failed_position = as.integer(failed_position),
+    failed_reason = as.character(failed_reason)
+  )
+}
