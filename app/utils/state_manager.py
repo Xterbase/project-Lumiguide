@@ -12,7 +12,14 @@ import streamlit as st
 
 UPLOADED_SAMPLE_KEY = "uploaded_sample"
 UPLOADED_FILE_NAME_KEY = "uploaded_file_name"
+UPLOADED_FILE_HASH_KEY = "uploaded_file_hash"
 POSITION_RESULT_KEY = "position_result"
+SELECTED_SIGNAL_POSITION_KEY = "selected_signal_position"
+RLUM_RECORDS_KEY = "rlum_records"
+SELECTED_RECORD_INFO_KEY = "selected_record_info"
+RLUM_RECORD_PLOT_RESULT_KEY = "rlum_record_plot_result"
+SIGNAL_PARAMS_KEY = "signal_params"
+
 
 
 # ============================================================
@@ -34,13 +41,35 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
         "input": {
             UPLOADED_SAMPLE_KEY: None,
             UPLOADED_FILE_NAME_KEY: None,
+            UPLOADED_FILE_HASH_KEY: None,
         },
         "output": {
             POSITION_RESULT_KEY: None,
         },
     },
+    "signal": {
+        "input": {
+            SELECTED_SIGNAL_POSITION_KEY: None,
+        },
+        "output": {
+            RLUM_RECORDS_KEY: None,
+        },
+    },
+    "record": {
+        "input": {
+            SELECTED_RECORD_INFO_KEY: None,
+        },
+        "output": {
+            RLUM_RECORD_PLOT_RESULT_KEY: None,
+        },
+    },
+    "sar_setup": {
+        "input": {
+            SIGNAL_PARAMS_KEY: None,
+        },
+        "output": {},
+    },
 }
-
 # 파이프라인 순서 (스키마 정의 순서에서 파생 — 따로 손으로 관리하지 않는다)
 STAGE_ORDER: list[str] = list(SESSION_SCHEMA.keys())
 
@@ -151,13 +180,18 @@ def reset_stage(stage: str) -> None:
 # 위젯/호출부와 자주 엮이는 upload 단계는 의미가 드러나는 얇은 wrapper를 둔다.
 # (내부는 제네릭 접근자 + invalidate_from을 재사용)
 
-def set_current_sample(sample: dict, uploaded_file_name: str) -> None:
+def set_current_sample(
+    sample: dict,
+    uploaded_file_name: str,
+    file_hash: str,
+) -> None:
     """
     현재 업로드된 sample 정보를 저장하고,
     이전 파일 기준으로 계산된 모든 다운스트림 결과를 무효화한다.
     """
     set_value(UPLOADED_SAMPLE_KEY, sample)
     set_value(UPLOADED_FILE_NAME_KEY, uploaded_file_name)
+    set_value(UPLOADED_FILE_HASH_KEY, file_hash)
     invalidate_from("upload")
 
 
@@ -173,15 +207,26 @@ def get_uploaded_file_name() -> str | None:
     return get_value(UPLOADED_FILE_NAME_KEY)
 
 
-def is_new_uploaded_file(uploaded_file_name: str) -> bool:
+def get_uploaded_file_hash() -> str | None:
+    return get_value(UPLOADED_FILE_HASH_KEY)
+
+
+def is_new_uploaded_file(uploaded_file_name: str, file_hash: str) -> bool:
     """
     현재 업로드된 파일이 기존 파일과 다른지 확인한다.
 
-    지금 Version1에서는 파일명 기준으로만 판단한다.
-    (동명이파일·내용변경은 추후 내용 해시 비교로 확장 예정)
+    내용 해시로 판단한다. 파일명만 비교하면 이름이 같고 내용이 다른 파일
+    (재측정한 data.bin 등)을 "같은 파일"로 오판해서, 이전 파일 기준 결과가
+    그대로 남은 채 조용히 틀린 분석이 나온다.
+
+    파일명도 함께 비교하는 이유:
+        내용이 같고 이름만 다른 파일을 올렸을 때도 UI 상태를 새로 잡아주기 위함이다.
+        (디스크 저장은 별개다. file_utils는 해시가 같으면 기존 sample 폴더를
+         재사용하므로, 이 경우 폴더가 새로 생기지는 않는다.)
     """
     return (
         get_value(UPLOADED_SAMPLE_KEY) is None
+        or get_value(UPLOADED_FILE_HASH_KEY) != file_hash
         or get_value(UPLOADED_FILE_NAME_KEY) != uploaded_file_name
     )
 
@@ -201,9 +246,123 @@ def get_position_result() -> dict | None:
 def has_position_result() -> bool:
     return has_value(POSITION_RESULT_KEY)
 
+# ============================================================
+# 8. Signal Analysis 단계 wrapper
+# ============================================================
+
+def set_selected_signal_position(position: int) -> None:
+    set_value(SELECTED_SIGNAL_POSITION_KEY, position)
+
+
+def get_selected_signal_position() -> int | None:
+    return get_value(SELECTED_SIGNAL_POSITION_KEY)
+
+
+def has_selected_signal_position() -> bool:
+    return has_value(SELECTED_SIGNAL_POSITION_KEY)
+
+
+def set_rlum_records(records: dict) -> None:
+    set_value(RLUM_RECORDS_KEY, records)
+
+
+def get_rlum_records() -> dict | None:
+    return get_value(RLUM_RECORDS_KEY)
+
+
+def has_rlum_records() -> bool:
+    return has_value(RLUM_RECORDS_KEY)
+
+
+def set_selected_record_info(record_info: dict) -> None:
+    set_value(SELECTED_RECORD_INFO_KEY, record_info)
+
+
+def get_selected_record_info() -> dict | None:
+    return get_value(SELECTED_RECORD_INFO_KEY)
+
+
+def has_selected_record_info() -> bool:
+    return has_value(SELECTED_RECORD_INFO_KEY)
+
+
+def set_rlum_record_plot_result(result: dict) -> None:
+    set_value(RLUM_RECORD_PLOT_RESULT_KEY, result)
+
+
+def get_rlum_record_plot_result() -> dict | None:
+    return get_value(RLUM_RECORD_PLOT_RESULT_KEY)
+
+
+def has_rlum_record_plot_result() -> bool:
+    return has_value(RLUM_RECORD_PLOT_RESULT_KEY)
+
+
+def set_signal_params(params: dict) -> None:
+    set_value(SIGNAL_PARAMS_KEY, params)
+
+
+def get_signal_params() -> dict | None:
+    return get_value(SIGNAL_PARAMS_KEY)
+
+
+def has_signal_params() -> bool:
+    return has_value(SIGNAL_PARAMS_KEY)
+
+
+def reset_signal_state() -> None:
+    """
+    Signal/Record/SAR setup 상태를 초기화한다.
+
+    새 파일 업로드처럼 signal 분석 전체를 다시 시작해야 할 때 사용한다.
+    """
+    reset_stage("signal")
+    reset_stage("record")
+    reset_stage("sar_setup")
+
+
+def reset_signal_position_outputs() -> None:
+    """
+    POSITION이 바뀌었을 때 POSITION에 종속된 상태만 초기화한다.
+
+    초기화:
+        rlum_records
+        selected_record_info
+        rlum_record_plot_result
+
+    유지:
+        selected_signal_position
+        signal_params
+
+    signal_params는 여러 POSITION/record plot을 보고 정하는
+    전역 SAR 설정값이므로 POSITION 변경만으로 지우지 않는다.
+    """
+    _reset_keys(_stage_output("signal"))
+    reset_stage("record")
+
+
+def reset_selected_record_outputs() -> None:
+    """
+    선택 record가 바뀌었을 때 record에 종속된 plot만 초기화한다.
+
+    유지:
+        rlum_records
+        selected_record_info
+        signal_params
+    """
+    _reset_keys(_stage_output("record"))
+
+
+def reset_signal_record_state() -> None:
+    """
+    기존 signal_tab.py 호출부 호환용 wrapper.
+
+    새 코드에서는 reset_signal_position_outputs()를 직접 쓰는 편이 더 명확하다.
+    """
+    reset_signal_position_outputs()
 
 # ============================================================
-# 8. 전체 리셋
+# 9. 전체 리셋
 # ============================================================
 
 def reset_upload_state() -> None:

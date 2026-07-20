@@ -1,8 +1,47 @@
 # app/utils/file_utils.py
 
+from datetime import datetime
+import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
+
+
+# ============================================================
+# 0. sample 폴더 규약
+# ============================================================
+# 폴더명: {샘플명}_{YYYYMMDD}_{NN}
+#   예) ExampleData_20260714_01
+#
+# 같은 시료의 측정들이 이름순으로 한데 모이고,
+# 그 안에서 날짜/번호로 언제 올린 것인지 구분된다.
+#
+# 각 sample 폴더에는 sample.json(메타)을 함께 남긴다.
+# 이게 있어야 "이미 올린 파일인지"를 내용 해시로 판단해서
+# 같은 파일을 다시 올릴 때 폴더가 중복 생성되는 걸 막을 수 있다.
+
+SAMPLE_META_FILE = "sample.json"
+
+# 폴더명이 너무 길면 macOS 파일명 길이 제한(255바이트)에 걸려 mkdir/open이 터진다.
+# 날짜(8) + 번호(2) + 구분자까지 붙는 걸 감안해 stem을 넉넉히 잘라둔다.
+MAX_STEM_LENGTH = 80
+
+
+# ============================================================
+# 0-1. 업로드 파일 내용 해시
+# ============================================================
+def compute_upload_hash(uploaded_file) -> str:
+    """
+    업로드된 파일의 내용을 sha256으로 해시한다.
+
+    이유:
+        파일명만으로 "같은 파일"인지 판단하면,
+        이름이 같고 내용이 다른 파일(예: 재측정한 data.bin)을 올렸을 때
+        이전 파일 기준 결과가 그대로 남아 조용히 틀린 분석이 나온다.
+        내용 해시로 비교해야 이 오판을 막을 수 있다.
+    """
+    return hashlib.sha256(uploaded_file.getbuffer()).hexdigest()
 
 
 # ============================================================
@@ -33,33 +72,43 @@ def sanitize_name(name: str) -> str:
     # 앞뒤 언더스코어 제거
     safe = safe.strip("_")
 
+    # 길이 제한 (파일명 길이 제한으로 mkdir/open이 터지는 걸 방지)
+    safe = safe[:MAX_STEM_LENGTH].strip("_")
+
     # 혹시 이름이 비면 기본값 사용
     return safe or "sample"
 
 
 # ============================================================
-# 2. 중복되지 않는 sample_id 만들기
+# 2. sample_id 만들기: {샘플명}_{YYYYMMDD}_{NN}
 # ============================================================
-def make_unique_sample_id(base_name: str, samples_dir: Path) -> str:
+def make_sample_id(
+    base_name: str,
+    samples_dir: Path,
+    today: str | None = None,
+) -> str:
     """
     outputs/samples 안에서 중복되지 않는 sample_id를 만든다.
 
     예:
-        CWOSL_SAR_example
-        CWOSL_SAR_example_2
-        CWOSL_SAR_example_3
+        ExampleData_20260714_01
+        ExampleData_20260714_02   (같은 날 다시 올린 다른 파일)
+        ExampleData_20260715_01   (다음 날)
+
+    번호(NN)는 "같은 샘플명 + 같은 날짜"를 쓰는 기존 폴더가 몇 개인지 보고 이어붙인다.
     """
 
-    base_id = sanitize_name(base_name)
+    stem = sanitize_name(base_name)
+    today = today or datetime.now().strftime("%Y%m%d")
 
-    sample_id = base_id
-    index = 2
+    prefix = f"{stem}_{today}_"
 
-    while (samples_dir / sample_id).exists():
-        sample_id = f"{base_id}_{index}"
+    index = 1
+
+    while (samples_dir / f"{prefix}{index:02d}").exists():
         index += 1
 
-    return sample_id
+    return f"{prefix}{index:02d}"
 
 
 # ============================================================
@@ -97,48 +146,157 @@ def create_sample_dirs(samples_dir: Path, sample_id: str) -> dict:
 
 
 # ============================================================
-# 4. 업로드 파일 저장
+# 4. sample 메타(sample.json) 읽기/쓰기
 # ============================================================
-def save_uploaded_file(uploaded_file, samples_dir: Path) -> dict:
-    """
-    Streamlit에서 업로드된 BIN/RDA 파일을 sample 폴더에 저장한다.
+# sample.json에는 경로가 아니라 "파일 이름"만 적는다.
+# 프로젝트 폴더를 옮기거나 이름을 바꿔도 sample 폴더 기준으로 경로를 다시 만들 수 있게 하기 위함이다.
 
-    입력:
-        uploaded_file:
-            st.file_uploader()가 반환한 파일 객체
+def _write_sample_meta(
+    sample_dir: Path,
+    sample_id: str,
+    file_hash: str,
+    original_file_name: str,
+    raw_file_name: str,
+) -> None:
+    meta = {
+        "sample_id": sample_id,
+        "file_hash": file_hash,
+        "original_file_name": original_file_name,
+        "raw_file_name": raw_file_name,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
 
-        samples_dir:
-            outputs/samples 경로
+    (sample_dir / SAMPLE_META_FILE).write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
-    출력:
-        {
-            "sample_id": "...",
-            "sample_dir": Path(...),
-            "raw_path": Path(...)
-        }
-    """
 
-    samples_dir.mkdir(parents=True, exist_ok=True)
+def _read_sample_meta(sample_dir: Path) -> dict | None:
+    meta_path = sample_dir / SAMPLE_META_FILE
 
-    # 업로드 파일명을 기준으로 sample_id 생성
-    sample_id = make_unique_sample_id(uploaded_file.name, samples_dir)
+    if not meta_path.exists():
+        return None
 
-    # sample 폴더 구조 생성
-    paths = create_sample_dirs(samples_dir, sample_id)
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        # 메타가 깨졌으면 "없는 것"으로 취급한다 (새로 저장하면 복구된다)
+        return None
 
-    # 원본 확장자는 유지
-    suffix = Path(uploaded_file.name).suffix
-    raw_path = paths["raw_dir"] / f"{sample_id}{suffix}"
 
-    # BIN/RDA는 binary 파일이므로 wb로 저장
-    with open(raw_path, "wb") as f:
-        f.write(uploaded_file.getbuffer())
-
+def _build_sample(sample_id: str, paths: dict, raw_path: Path, file_hash: str) -> dict:
     return {
         "sample_id": sample_id,
         "sample_dir": paths["sample_dir"],
         "raw_path": raw_path,
         "paths": paths,
+        "file_hash": file_hash,
+    }
+
+
+def find_sample_by_hash(samples_dir: Path, file_hash: str) -> dict | None:
+    """
+    이미 저장된 sample 중 내용 해시가 같은 것을 찾는다.
+
+    같은 파일을 다시 업로드했을 때 폴더를 새로 만들지 않고 기존 것을 재사용하기 위함이다.
+    (전에는 재업로드마다 ExampleData_2, _3, _4 ... 로 원본 사본이 계속 쌓였다)
+    """
+
+    if not samples_dir.exists():
+        return None
+
+    for sample_dir in sorted(samples_dir.iterdir()):
+        if not sample_dir.is_dir():
+            continue
+
+        meta = _read_sample_meta(sample_dir)
+
+        if meta is None or meta.get("file_hash") != file_hash:
+            continue
+
+        raw_path = sample_dir / "raw" / str(meta.get("raw_file_name", ""))
+
+        # 메타는 남아 있는데 원본이 지워진 경우 → 재사용하지 않고 새로 저장하게 둔다
+        if not raw_path.exists():
+            continue
+
+        paths = create_sample_dirs(samples_dir, sample_dir.name)
+
+        return _build_sample(
+            sample_id=sample_dir.name,
+            paths=paths,
+            raw_path=raw_path,
+            file_hash=file_hash,
+        )
+
+    return None
+
+
+# ============================================================
+# 5. 업로드 파일 저장
+# ============================================================
+def save_uploaded_file(
+    uploaded_file,
+    samples_dir: Path,
+    file_hash: str | None = None,
+) -> dict:
+    """
+    Streamlit에서 업로드된 BIN/RDA 파일을 sample 폴더에 저장한다.
+
+    내용 해시가 같은 sample이 이미 있으면 저장하지 않고 그 폴더를 재사용한다.
+    (이전 분석 결과 curve_plot/ 등도 그대로 남는다)
+
+    출력:
+        {
+            "sample_id": "ExampleData_20260714_01",
+            "sample_dir": Path(...),
+            "raw_path": Path(...),
+            "paths": {...},
+            "file_hash": "...",
+            "reused": bool,     # 기존 폴더를 재사용했는지
+        }
+    """
+
+    samples_dir.mkdir(parents=True, exist_ok=True)
+
+    if file_hash is None:
+        file_hash = compute_upload_hash(uploaded_file)
+
+    # ------------------------------------------------------------
+    # 이미 올린 적 있는 파일이면 기존 폴더 재사용
+    # ------------------------------------------------------------
+    existing = find_sample_by_hash(samples_dir, file_hash)
+
+    if existing is not None:
+        return {**existing, "reused": True}
+
+    # ------------------------------------------------------------
+    # 새 파일 → {샘플명}_{YYYYMMDD}_{NN} 폴더 생성
+    # ------------------------------------------------------------
+    sample_id = make_sample_id(uploaded_file.name, samples_dir)
+    paths = create_sample_dirs(samples_dir, sample_id)
+
+    # 원본 확장자는 유지
+    suffix = Path(uploaded_file.name).suffix
+    raw_file_name = f"{sample_id}{suffix}"
+    raw_path = paths["raw_dir"] / raw_file_name
+
+    # BIN/RDA는 binary 파일이므로 wb로 저장
+    with open(raw_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+
+    _write_sample_meta(
+        sample_dir=paths["sample_dir"],
+        sample_id=sample_id,
+        file_hash=file_hash,
+        original_file_name=uploaded_file.name,
+        raw_file_name=raw_file_name,
+    )
+
+    return {
+        **_build_sample(sample_id, paths, raw_path, file_hash),
+        "reused": False,
     }
 
 

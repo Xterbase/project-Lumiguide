@@ -6,7 +6,7 @@ from pathlib import Path
 
 import streamlit as st
 
-from utils.file_utils import save_uploaded_file
+from utils.file_utils import compute_upload_hash, save_uploaded_file
 from utils.r_runner import inspect_uploaded_file
 from utils.state_manager import (
     get_current_sample,
@@ -34,7 +34,13 @@ def _render_sample_summary(sample: dict) -> None:
     """
     현재 업로드된 sample 정보를 출력한다.
     """
-    st.success("파일 업로드 완료")
+    if sample.get("reused"):
+        st.info(
+            "이미 업로드한 적 있는 파일입니다 (내용 동일). "
+            "새 폴더를 만들지 않고 기존 sample 폴더를 재사용합니다."
+        )
+    else:
+        st.success("파일 업로드 완료")
 
     col1, col2 = st.columns(2)
 
@@ -126,17 +132,26 @@ def render_upload_tab(output_dir: Path) -> None:
         return
 
     # ------------------------------------------------------------
-    # 새 파일 업로드 감지
+    # 새 파일 업로드 감지 (파일명이 아니라 내용 해시 기준)
     # ------------------------------------------------------------
-    if is_new_uploaded_file(uploaded_file.name):
-        sample = save_uploaded_file(
-            uploaded_file=uploaded_file,
-            samples_dir=output_dir,
-        )
+    file_hash = compute_upload_hash(uploaded_file)
+
+    if is_new_uploaded_file(uploaded_file.name, file_hash):
+        try:
+            sample = save_uploaded_file(
+                uploaded_file=uploaded_file,
+                samples_dir=output_dir,
+                file_hash=file_hash,
+            )
+        except Exception as e:
+            st.error("업로드 파일을 저장하지 못했습니다.")
+            st.exception(e)
+            return
 
         set_current_sample(
             sample=sample,
             uploaded_file_name=uploaded_file.name,
+            file_hash=file_hash,
         )
 
     sample = get_current_sample()

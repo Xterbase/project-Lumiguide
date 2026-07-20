@@ -1,9 +1,3 @@
-# <터미널에 직접 실행하여 웹앱 구동>
-# cd /Users/minchanhong/Desktop/Macintosh/Code/Lumiguide
-# source venv/bin/activate
-# streamlit run app/prototypes/version1_upload.py
-#=================================================================================#
-
 from pathlib import Path
 import sys
 

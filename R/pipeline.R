@@ -2,11 +2,86 @@
 
 library(Luminescence)
 
-# Version1: upload data
-# ---------------------------
-# 1. load_bin_data() : BIN/RDA/RData 등 파일을 읽어서 Risoe.BINfileData 객체를 반환
-# 2. inspect_positions() : load_bin_data()를 통해 불러온 객체의 POSITION 정보를 요약
-# ---------------------------
+# ============================================================
+# Common: 로드된 파일 캐시
+# ============================================================
+# load_bin_data()는 inspect_positions / inspect_rlum_records_by_position /
+# save_rlum_record_plot 등 모든 진입점의 첫 줄에서 호출된다.
+# 캐시가 없으면 record를 하나 클릭할 때마다 BIN 파일 전체를 다시 파싱하므로,
+# 실제 크기의 측정 파일에서는 클릭마다 수 초씩 멈춘다.
+#
+# 캐시 키 = 정규화 경로 + mtime + size
+#   → 같은 경로라도 파일 내용이 바뀌면 키가 달라져 자동으로 무효화된다.
+#
+# Risoe.BINfileData 객체는 메모리를 많이 쓰므로 최근 N개만 유지한다(LRU).
+
+.bin_cache <- new.env(parent = emptyenv())
+.BIN_CACHE_MAX_ENTRIES <- 3L
+
+.bin_cache_key <- function(normalized_path) {
+  info <- file.info(normalized_path)
+
+  paste(
+    normalized_path,
+    as.numeric(info$mtime),
+    info$size,
+    sep = "|"
+  )
+}
+
+.bin_cache_get <- function(key) {
+  if (!exists(key, envir = .bin_cache, inherits = FALSE)) {
+    return(NULL)
+  }
+
+  entry <- get(key, envir = .bin_cache, inherits = FALSE)
+
+  # LRU 갱신
+  entry$last_used <- Sys.time()
+  assign(key, entry, envir = .bin_cache)
+
+  entry$value
+}
+
+.bin_cache_put <- function(key, value) {
+  assign(
+    key,
+    list(value = value, last_used = Sys.time()),
+    envir = .bin_cache
+  )
+
+  keys <- ls(.bin_cache, all.names = TRUE)
+
+  if (length(keys) > .BIN_CACHE_MAX_ENTRIES) {
+    last_used <- vapply(
+      keys,
+      function(k) as.numeric(get(k, envir = .bin_cache)$last_used),
+      numeric(1)
+    )
+
+    n_drop <- length(keys) - .BIN_CACHE_MAX_ENTRIES
+    drop_keys <- keys[order(last_used)][seq_len(n_drop)]
+
+    rm(list = drop_keys, envir = .bin_cache)
+  }
+
+  invisible(value)
+}
+
+clear_bin_cache <- function() {
+  rm(
+    list = ls(.bin_cache, all.names = TRUE),
+    envir = .bin_cache
+  )
+
+  invisible(TRUE)
+}
+
+# ============================================================
+# Common: data loading
+# ============================================================
+# BIN/RDA/RData 파일을 읽고, 이후 분석 단계에서 공통으로 사용할
+# Risoe.BINfileData 객체와 metadata 정보를 반환한다.
 
 load_bin_data <- function(path) {
   # ------------------------------------------------------------
@@ -37,6 +112,17 @@ load_bin_data <- function(path) {
 
   file_name <- basename(normalized_path)
   ext <- tolower(tools::file_ext(normalized_path))
+
+  # ------------------------------------------------------------
+  # 3-1. 캐시 조회
+  #      같은 파일(경로+mtime+size)이면 재파싱하지 않는다.
+  # ------------------------------------------------------------
+  cache_key <- .bin_cache_key(normalized_path)
+  cached <- .bin_cache_get(cache_key)
+
+  if (!is.null(cached)) {
+    return(cached)
+  }
 
   # ------------------------------------------------------------
   # 4. 확장자 검증
@@ -146,10 +232,11 @@ load_bin_data <- function(path) {
   }
 
   # ------------------------------------------------------------
-  # 11. 반환
+  # 11. 반환 (캐시에 적재 후 반환)
   # ------------------------------------------------------------
-  list(
+  result <- list(
     bin_data = bin_data,
+    metadata = metadata,
 
     file_path = normalized_path,
     file_name = file_name,
@@ -165,7 +252,17 @@ load_bin_data <- function(path) {
 
     record_types = as.character(record_types)
   )
+
+  .bin_cache_put(cache_key, result)
+
+  result
 }
+
+# ============================================================
+# Version1: upload & position inspect
+# ============================================================
+# load_bin_data()로 불러온 데이터에서 전체 POSITION 정보를 요약한다.
+# Upload & Inspect 탭에서 파일 구조, metadata, POSITION 목록을 확인하는 데 사용한다.
 
 inspect_positions <- function(path) {
   loaded <- load_bin_data(path)
@@ -183,5 +280,234 @@ inspect_positions <- function(path) {
     positions = loaded$positions,
 
     record_types = loaded$record_types
+  )
+}
+
+# Version2: signal analysis
+# ---------------------------
+# Version1에서 구현한 파일 로딩/position 확인 흐름을 기반으로,
+# 사용자가 선택한 POSITION의 RLum record 목록을 확인하고
+# 선택한 record의 신호 곡선을 저장/확인하는 단계다.
+#
+#
+# 3. inspect_rlum_records_by_position()
+#    - 선택한 POSITION에 해당하는 metadata row와 RLum record 정보를 요약
+#    - record_index, LTYPE, DTYPE, RUN, SET, IRR_TIME, NPOINTS 등을 반환
+#
+# 4. save_rlum_record_plot()
+#    - 선택한 POSITION의 특정 record를 plot으로 저장
+#    - 연구자가 신호 형태를 확인하고 signal/background integral을 정할 수 있게 함
+# ---------------------------
+# 선택한 POSITION의 metadata row와 RLum record를 함께 가져오고,
+# 둘의 1:1 정렬이 실제로 성립하는지 검증한다.
+#
+# 배경 (중요):
+#   record_index는 "metadata 행 순서 == RLum record 순서"라는 전제로 만들어지고,
+#   save_rlum_record_plot()은 그 번호로 obj[record_index]를 그린다.
+#   이 전제가 깨지면 사용자가 고른 record와 다른 곡선이 에러 없이 그려진다.
+#
+#   그리고 이 전제는 실제로 깨질 수 있다.
+#   Risoe.BINfileData2RLum.Analysis()는 내부에서 GRAIN 값별로 결과를 만들기 때문에,
+#   한 POSITION 안에 GRAIN이 여러 개면 (single-grain 측정)
+#   단일 RLum.Analysis가 아니라 "grain별 RLum.Analysis의 list"를 반환한다.
+#   그러면 length(obj)는 record 수가 아니라 grain 수가 되어,
+#   obj[record_index]는 record가 아니라 grain을 가리키게 된다.
+#
+# 예전 구현은 이 경우 warning() 후 min()으로 잘라냈는데,
+#   - R의 warning()은 Streamlit UI까지 올라오지 않고
+#   - 잘라내도 정렬이 복구되는 게 아니라 그냥 틀린 곡선이 그려진다.
+# 조용히 틀린 곡선을 보여주느니 명시적으로 막는다.
+.load_position_records <- function(path, pos) {
+  loaded <- load_bin_data(path)
+
+  bin_data <- loaded$bin_data
+  metadata <- loaded$metadata
+
+  pos <- as.integer(pos)
+
+  metadata_index <- which(metadata$POSITION == pos)
+  meta_pos <- metadata[metadata_index, , drop = FALSE]
+
+  if (nrow(meta_pos) == 0) {
+    stop(paste0("해당 POSITION의 metadata를 찾지 못했습니다: ", pos))
+  }
+
+  # ------------------------------------------------------------
+  # GRAIN 검증 (정렬이 깨지는 실제 원인)
+  # ------------------------------------------------------------
+  grains <- unique(meta_pos$GRAIN)
+  grains <- grains[!is.na(grains)]
+
+  if (length(grains) > 1) {
+    stop(
+      paste0(
+        "POSITION ", pos, "에 GRAIN이 여러 개 있습니다 (",
+        paste(sort(grains), collapse = ", "),
+        "). single-grain 측정 파일은 아직 지원하지 않습니다. ",
+        "이 상태로는 record 번호와 실제 곡선이 어긋나므로 분석을 중단합니다."
+      )
+    )
+  }
+
+  obj <- Risoe.BINfileData2RLum.Analysis(
+    object = bin_data,
+    pos = pos
+  )
+
+  if (length(obj) == 0) {
+    stop(paste0("해당 POSITION의 RLum record를 찾지 못했습니다: ", pos))
+  }
+
+  # GRAIN이 하나여도 record 수가 안 맞으면 정렬을 신뢰할 수 없다.
+  if (!inherits(obj, "RLum.Analysis") || nrow(meta_pos) != length(obj)) {
+    stop(
+      paste0(
+        "POSITION ", pos, "의 record 정렬이 맞지 않습니다: ",
+        "METADATA record ", nrow(meta_pos), "개, ",
+        "RLum record ", length(obj), "개. ",
+        "record 번호와 실제 곡선이 어긋날 수 있어 분석을 중단합니다."
+      )
+    )
+  }
+
+  list(
+    pos = pos,
+    obj = obj,
+    meta_pos = meta_pos,
+    metadata_index = metadata_index
+  )
+}
+
+inspect_rlum_records_by_position <- function(path, pos) {
+  found <- .load_position_records(path, pos)
+
+  pos <- found$pos
+  meta_pos <- found$meta_pos
+  metadata_index <- found$metadata_index
+
+  n <- nrow(meta_pos)
+  record_index <- seq_len(n)
+
+  get_col <- function(df, col, default = NA) {
+    if (col %in% colnames(df)) {
+      return(df[[col]])
+    }
+
+    rep(default, nrow(df))
+  }
+
+  record_type <- as.character(get_col(meta_pos, "LTYPE", "UNKNOWN"))
+  dtype <- as.character(get_col(meta_pos, "DTYPE", "UNKNOWN"))
+  comment <- as.character(get_col(meta_pos, "COMMENT", ""))
+  run <- as.integer(get_col(meta_pos, "RUN", NA))
+  set <- as.integer(get_col(meta_pos, "SET", NA))
+  irr_time <- as.numeric(get_col(meta_pos, "IRR_TIME", NA))
+  npoints <- as.integer(get_col(meta_pos, "NPOINTS", NA))
+  low <- as.numeric(get_col(meta_pos, "LOW", NA))
+  high <- as.numeric(get_col(meta_pos, "HIGH", NA))
+  an_temp <- as.numeric(get_col(meta_pos, "AN_TEMP", NA))
+  an_time <- as.numeric(get_col(meta_pos, "AN_TIME", NA))
+  light_source <- as.character(get_col(meta_pos, "LIGHTSOURCE", ""))
+
+  record_label <- paste0(
+    "#", record_index,
+    " | ", record_type,
+    " | ", dtype,
+    " | ", comment,
+    " | RUN ", run,
+    " | SET ", set,
+    " | IRR ", irr_time
+  )
+
+  list(
+    position = as.integer(pos),
+    n_records = as.integer(n),
+    record_index = as.integer(record_index),
+    metadata_index = as.integer(metadata_index),
+    record_type = as.character(record_type),
+    dtype = as.character(dtype),
+    comment = as.character(comment),
+    run = as.integer(run),
+    set = as.integer(set),
+    irr_time = as.numeric(irr_time),
+    npoints = as.integer(npoints),
+    low = as.numeric(low),
+    high = as.numeric(high),
+    an_temp = as.numeric(an_temp),
+    an_time = as.numeric(an_time),
+    light_source = as.character(light_source),
+    record_label = as.character(record_label)
+  )
+}
+
+save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
+  # inspect_rlum_records_by_position()과 같은 정렬 검증을 거친다.
+  # record_index는 그 함수가 만든 번호이므로, 같은 전제 위에서만 유효하다.
+  found <- .load_position_records(path, pos)
+
+  pos <- found$pos
+  obj <- found$obj
+
+  record_index <- as.integer(record_index)
+
+  if (record_index < 1 || record_index > length(obj)) {
+    stop(
+      paste0(
+        "존재하지 않는 record index입니다: ",
+        record_index,
+        " / 가능한 범위: 1:",
+        length(obj)
+      )
+    )
+  }
+
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+
+  output_dir <- normalizePath(
+    output_dir,
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  file_name <- sprintf(
+    "position_%03d_record_%03d_rlum.png",
+    pos,
+    record_index
+  )
+
+  file_path <- file.path(output_dir, file_name)
+
+  png(filename = file_path, width = 1200, height = 800, res = 120)
+
+  # macOS 기본 png 디바이스(quartz)는 dev.off() 시점에야 파일을 디스크에 쓴다.
+  # 따라서 dev.off()를 on.exit에만 걸어두면, 아직 파일이 없는 상태에서
+  # 아래 normalizePath(mustWork = TRUE)가 실패한다.
+  # -> 그리기가 끝나면 즉시 닫아서 flush 하고, on.exit은 에러 시 device 누수 방지용으로만 둔다.
+  device_id <- dev.cur()
+  on.exit(
+    if (dev.cur() == device_id) dev.off(),
+    add = TRUE
+  )
+
+  plot_RLum(obj[record_index])
+
+  dev.off()
+
+  if (!file.exists(file_path)) {
+    stop(paste0("Curve 이미지를 생성하지 못했습니다: ", file_path))
+  }
+
+  normalized_file_path <- normalizePath(
+    file_path,
+    winslash = "/",
+    mustWork = TRUE
+  )
+
+  list(
+    position = as.integer(pos),
+    record_index = as.integer(record_index),
+    plot_file = as.character(normalized_file_path)
   )
 }
