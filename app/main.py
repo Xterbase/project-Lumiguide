@@ -67,23 +67,66 @@ st.caption(
 
 
 # ============================================================
-# 6. Sidebar
+# 6. Workflow 단계 정의
 # ============================================================
+# 사이드바 목록과 탭 라벨은 이 리스트 하나에서 만든다.
+# 예전에 두 곳에 따로 적어두는 바람에 번호가 어긋난 적이 있다
+# (De Distribution 탭이 빠져서 Model Recommendation이 4번을 차지했다).
+
+WORKFLOW_STEPS = [
+    "1. Data Upload & Inspect",
+    "2. Signal Analysis",
+    "3. SAR Analysis",
+    "4. De Distribution",
+    "5. Model Recommendation",
+]
+
+# st.tabs()의 key. 여기에 탭 라벨을 넣고 rerun하면 그 탭이 활성화된다.
+#
+# 주의: st.tabs()는 key만 줘서는 session_state와 연결되지 않는다.
+# 구현상 on_change가 기본값 "ignore"이면 위젯으로 등록되지 않아서
+# session_state[key]에 값을 넣어도 탭이 그 값을 읽지 않는다.
+# 사이드바에서 탭을 바꾸려면 on_change="rerun"이 반드시 필요하다.
+ACTIVE_TAB_KEY = "active_workflow_tab"
+
+
+# ============================================================
+# 7. Sidebar
+# ============================================================
+# 버튼 텍스트는 기본이 가운데 정렬이고 이를 바꾸는 옵션이 없어서 CSS로 처리한다.
+# Streamlit 내부 DOM에 기대는 코드이므로 버전이 올라가면 깨질 수 있다.
+# (깨져도 정렬만 가운데로 돌아갈 뿐 기능에는 영향이 없다)
+
+st.markdown(
+    """
+    <style>
+    section[data-testid="stSidebar"] .stButton > button,
+    section[data-testid="stSidebar"] .stButton > button > div {
+        justify-content: flex-start;
+        text-align: left;
+    }
+</style>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.sidebar:
     st.header("LumiGuide")
 
-    st.markdown(
-        """
-        **Workflow**
+    st.caption("Workflow")
 
-        1. Data Upload & Inspect  
-        2. Signal Analysis  
-        3. SAR Analysis  
-        4. De Distribution  
-        5. Model Recommendation  
-        """
-    )
+    for step in WORKFLOW_STEPS:
+        # 현재 탭은 눌린 것처럼 보이게 해서 어디에 있는지 알 수 있게 한다.
+        is_active = st.session_state.get(ACTIVE_TAB_KEY) == step
+
+        if st.button(
+            step,
+            key=f"nav_{step}",
+            width="stretch",
+            type="primary" if is_active else "tertiary",
+        ):
+            st.session_state[ACTIVE_TAB_KEY] = step
+            st.rerun()
 
     st.divider()
 
@@ -93,19 +136,13 @@ with st.sidebar:
 
 
 # ============================================================
-# 7. Main Tabs
+# 8. Main Tabs
 # ============================================================
 
-# 탭 번호는 사이드바 Workflow 목록과 일치해야 한다.
-# (De Distribution 탭이 빠져 있어서 Model Recommendation이 4번으로 밀려 있었다)
 tab_upload, tab_signal, tab_sar, tab_de, tab_model = st.tabs(
-    [
-        "1. Data Upload & Inspect",
-        "2. Signal Analysis",
-        "3. SAR Analysis",
-        "4. De Distribution",
-        "5. Model Recommendation",
-    ]
+    WORKFLOW_STEPS,
+    key=ACTIVE_TAB_KEY,
+    on_change="rerun",
 )
 
 
