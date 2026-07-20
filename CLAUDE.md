@@ -57,11 +57,14 @@ R installation with the `Luminescence` package available on the system.
 Three layers, bridged by `rpy2`. Data flows **UI → utils → R** and back:
 
 ```
-app/main.py            Streamlit entry: page config, sidebar, 4 workflow tabs
-  └─ app/tabs/         one module per tab (only upload_tab is implemented)
+app/main.py            Streamlit entry: page config, sidebar, 5 workflow tabs
+  └─ app/tabs/         one module per tab (upload / signal / sar implemented)
        └─ app/utils/   the bridge + state layer
             └─ R/pipeline.R   R functions run inside the Luminescence package
 ```
+
+The tab numbering in `main.py` must match the sidebar Workflow list — they drifted
+apart once already (De Distribution was missing, so Model Recommendation sat at 4).
 
 - **`app/utils/r_runner.py`** is the single crossing point into R. `pipeline.R` is
   `source()`d exactly once (guarded by `_PIPELINE_LOADED` + `R_LOCK`), and every R call
@@ -70,10 +73,20 @@ app/main.py            Streamlit entry: page config, sidebar, 4 workflow tabs
   `rpy2.robjects.r[...]` directly from tabs or elsewhere. R results are manually unpacked
   from R vectors into plain Python dicts here (see `inspect_uploaded_file`).
 
-- **`R/pipeline.R`** holds the analysis functions (currently `load_bin_data` /
-  `inspect_positions`). It reads Risø `.bin` / `.rda` / `.rdata` files into a
-  `Risoe.BINfileData` object and returns file/POSITION/record-type summaries. Input
-  validation and error messages live in R and surface up to the Streamlit UI as exceptions.
+- **`R/pipeline.R`** holds the analysis functions. It reads Risø `.bin` / `.rda` /
+  `.rdata` files into a `Risoe.BINfileData` object (`load_bin_data`, LRU-cached by
+  path+mtime+size), summarizes positions/records (`inspect_positions`,
+  `inspect_rlum_records_by_position`), plots curves (`save_rlum_record_plot`), and runs
+  SAR (`run_sar_analysis`). Input validation and error messages live in R and surface
+  up to the Streamlit UI as exceptions. Three things bite here:
+  - **macOS quartz png writes the file only at `dev.off()`.** Close the device
+    explicitly right after drawing, then check `file.exists()`; leave `on.exit` only as
+    a leak guard. Getting this order wrong makes every plot silently fail.
+  - **`analyse_SAR.CWOSL()` takes vectors**, not the `signal.integral.min/max` form seen
+    in older docs: `signal_integral = c(1, 2)`, `background_integral = c(900, 1000)`.
+  - **Batch stages collect per-item failures instead of aborting.** `run_sar_analysis`
+    returns `failed_position` + `failed_reason` so one bad aliquot doesn't discard the
+    rest — a De distribution needs many aliquots, and a dropped one must say why.
 
 - **`app/utils/state_manager.py`** is the most non-obvious file. It models the pipeline as
   ordered **stages**, each with `input` (user/widget values) and `output` (computed
@@ -85,22 +98,35 @@ app/main.py            Streamlit entry: page config, sidebar, 4 workflow tabs
   for widget binding). Prefer the generic accessors (`set_value`/`get_value`/`has_value`)
   and the stage wrappers over touching `st.session_state` directly.
 
-- **`app/utils/file_utils.py`** handles upload persistence. Each upload gets a sanitized,
-  de-duplicated `sample_id` and a fixed folder layout under
-  `outputs/samples/{sample_id}/`: `raw/`, `inspect/`, `curve_plot/`, `analysis_results/`
-  (later stages reuse these pre-created dirs).
+- **`app/utils/file_utils.py`** handles upload and result persistence. Each upload gets a
+  sanitized, de-duplicated `sample_id` (`{name}_{YYYYMMDD}_{NN}`, reused when the content
+  hash matches) and a fixed folder layout under `outputs/samples/{sample_id}/`: `raw/`,
+  `inspect/`, `curve_plot/`, `analysis_results/`. **Analysis results must be written to
+  disk, not just held in session state** — that is a project requirement, not a nicety.
+  `save_sar_results()` writes the SAR CSVs; dose-response PNGs go to `curve_plot/`.
 
 ## Current status & direction
 
-Only the **upload** stage of the pipeline is implemented; the Signal Analysis, SAR, and
-Model Recommendation tabs are placeholders. `requirements.txt` lists `fastapi` / `uvicorn`
-/ `openai` / `python-dotenv`, but no FastAPI backend or LLM code exists yet — these are
-planned. Two decisions are explicitly still open (see
-`LumiGuide_멀티에이전트_기획정리.txt`): whether model recommendation is LLM-based or
-rule-based, and the API contract / data schema. Read that planning doc before large
-structural changes — it defines the intended layer split and the multi-agent rollout plan
-(analysis / backend / frontend via git worktrees), which is why the layer boundaries above
-matter.
+Implemented: **upload**, **signal analysis**, **SAR analysis** (De values, QC
+classification, per-position dose-response plots, CSV output). Still placeholders: **De
+distribution** and **model recommendation**.
+
+`requirements.txt` lists `fastapi` / `uvicorn` / `openai` / `python-dotenv`, but no
+FastAPI backend or LLM code exists yet — these are planned. Two decisions are explicitly
+still open (see `LumiGuide_멀티에이전트_기획정리.txt`): whether model recommendation is
+LLM-based or rule-based, and the API contract / data schema. Read that planning doc before
+large structural changes — it defines the intended layer split and the multi-agent rollout
+plan (analysis / backend / frontend via git worktrees), which is why the layer boundaries
+above matter.
+
+On the LLM-vs-rule question, note that reproducibility is the constraint that decides it:
+CAM/MAM/FMM selection criteria are established in the literature, and the same input must
+yield the same model for the result to be publishable. The same logic applies upstream —
+signal/background integral choice shifts De by ~15% and is not recorded in the data file,
+which is why `signal_params` is carried into the SAR results rather than left implicit.
+
+Open issues carried between sessions live in the `전체점검 및 수정(*).txt` notes at the
+repo root — check the most recent one before picking up work.
 
 When adding a workflow stage, follow the existing pattern: add its schema entry in
 `state_manager.py`, add R functions in `pipeline.R`, expose them through `r_runner.py`'s

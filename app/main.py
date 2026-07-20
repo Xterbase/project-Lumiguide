@@ -96,12 +96,15 @@ with st.sidebar:
 # 7. Main Tabs
 # ============================================================
 
-tab_upload, tab_signal, tab_sar, tab_model = st.tabs(
+# 탭 번호는 사이드바 Workflow 목록과 일치해야 한다.
+# (De Distribution 탭이 빠져 있어서 Model Recommendation이 4번으로 밀려 있었다)
+tab_upload, tab_signal, tab_sar, tab_de, tab_model = st.tabs(
     [
         "1. Data Upload",
         "2. Signal Analysis",
         "3. SAR Analysis",
-        "4. Model Recommendation",
+        "4. De Distribution",
+        "5. Model Recommendation",
     ]
 )
 
@@ -118,6 +121,11 @@ with tab_sar:
     render_sar_tab()
 
 
+with tab_de:
+    st.header("4. De Distribution")
+    st.info("SAR 결과의 De 분포 분석 기능은 다음 단계에서 연결합니다.")
+
+
 with tab_model:
-    st.header("4. Model Recommendation")
+    st.header("5. Model Recommendation")
     st.info("De distribution 기반 모델 추천 기능은 다음 단계에서 연결합니다.")
