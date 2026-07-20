@@ -143,6 +143,11 @@ load_bin_data <- function(path) {
   object_name <- NA_character_
   bin_data <- NULL
 
+  # rda/RData는 객체를 여러 개 담을 수 있다. 몇 개 중에 뭘 골랐는지를
+  # 호출부(UI)까지 올려보내기 위한 값. bin은 객체 하나짜리 형식이라 1로 고정.
+  n_candidates <- 1L
+  ignored_objects <- character(0)
+
   # ------------------------------------------------------------
   # 5. BIN 파일 로딩
   # ------------------------------------------------------------
@@ -182,7 +187,14 @@ load_bin_data <- function(path) {
       stop("RDA/RData 파일 안에서 Risoe.BINfileData 객체를 찾지 못했습니다.")
     }
 
+    # 후보가 여러 개면 첫 번째를 쓰되, 여기서 조용히 넘어가면 안 된다.
+    # load()가 돌려주는 순서 = 저장 당시 인자 순서라서, 어느 시료가
+    # 분석될지가 연구자에게 보이지 않는 요인으로 결정된다.
+    # 몇 개 중 뭘 골랐고 뭘 버렸는지를 반환값에 실어 UI에서 경고한다.
+    n_candidates <- length(candidates)
     object_name <- candidates[1]
+    ignored_objects <- candidates[-1]
+
     bin_data <- get(object_name, envir = load_env)
   }
 
@@ -243,6 +255,8 @@ load_bin_data <- function(path) {
     file_type = ext,
 
     object_name = object_name,
+    n_candidates = as.integer(n_candidates),
+    ignored_objects = as.character(ignored_objects),
 
     n_metadata_rows = as.integer(nrow(metadata)),
     metadata_columns = as.character(metadata_columns),
@@ -272,6 +286,8 @@ inspect_positions <- function(path) {
     file_path = loaded$file_path,
     file_type = loaded$file_type,
     object_name = loaded$object_name,
+    n_candidates = loaded$n_candidates,
+    ignored_objects = loaded$ignored_objects,
 
     n_metadata_rows = loaded$n_metadata_rows,
     metadata_columns = loaded$metadata_columns,

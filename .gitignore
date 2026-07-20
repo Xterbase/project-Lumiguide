@@ -22,3 +22,5 @@ outputs/
 
 # R 실행 부산물 (실행할 때마다 재생성됨)
 Rplots.pdf
+.Rapp.history
+.Rhistory

@@ -156,6 +156,8 @@ def inspect_uploaded_file(path: str | Path) -> dict:
             file_path_result = r_scalar_str(result.rx2("file_path"))
             file_type = r_scalar_str(result.rx2("file_type"))
             object_name = r_scalar_str(result.rx2("object_name"))
+            n_candidates = r_scalar_int(result.rx2("n_candidates"))
+            ignored_objects = r_str_list(result.rx2("ignored_objects"))
 
             n_metadata_rows = r_scalar_int(result.rx2("n_metadata_rows"))
             metadata_columns = r_str_list(result.rx2("metadata_columns"))
@@ -170,6 +172,8 @@ def inspect_uploaded_file(path: str | Path) -> dict:
         "file_path": file_path_result,
         "file_type": file_type,
         "object_name": object_name,
+        "n_candidates": n_candidates,
+        "ignored_objects": ignored_objects,
         "n_metadata_rows": n_metadata_rows,
         "metadata_columns": metadata_columns,
         "n_positions": n_positions,

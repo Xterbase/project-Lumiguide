@@ -62,6 +62,19 @@ def _render_position_result(result: dict) -> None:
     """
     st.success("POSITION 확인 완료")
 
+    # rda 안에 Risoe.BINfileData가 여러 개면 첫 번째가 자동 선택된다.
+    # 어느 시료가 분석 중인지 연구자가 모르는 채로 넘어가면 안 되므로 알린다.
+    n_candidates = result.get("n_candidates") or 1
+
+    if n_candidates > 1:
+        ignored = result.get("ignored_objects") or []
+        st.warning(
+            f"이 파일에는 Risoe.BINfileData 객체가 {n_candidates}개 있습니다. "
+            f"첫 번째인 `{result.get('object_name')}`을 사용합니다.\n\n"
+            f"사용하지 않은 객체: {', '.join(ignored)}\n\n"
+            "다른 객체를 분석하려면 해당 객체만 따로 저장한 파일을 업로드하세요."
+        )
+
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
