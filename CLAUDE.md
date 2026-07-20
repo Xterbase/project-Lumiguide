@@ -12,9 +12,26 @@ does **not** reimplement those statistics.
 
 Communication with the user is in Korean; source comments are Korean.
 
+## Local-only documents
+
+This repository is public, so the planning and working documents are deliberately kept out
+of it (`.gitignore`). They exist in the working directory but not in git history:
+
+| File | What it is |
+|---|---|
+| `루미네선스 연대 해석을 위한 데이터 시각화 및 모델 추천 시스템 개발.pdf` | Development proposal — the product plan below is derived from it |
+| `LumiGuide_멀티에이전트_기획정리.txt` | Internal planning: layer split, multi-agent rollout |
+| `전체점검 및 수정(*).txt` | Dated working notes: fixes, design rationale, open issues |
+| `이슈정리_업로드단계.txt` | Earlier issue log for the upload stage |
+
+References to these files elsewhere in this document point at local copies. If they are
+missing, ask the user rather than assuming the information is unavailable — do not commit
+them, and do not treat their absence as license to skip reading them.
+
 ## Product plan (from the development-proposal PDF)
 
-Source of truth: `루미네선스 연대 해석을 위한 데이터 시각화 및 모델 추천 시스템 개발.pdf`.
+Source of truth: `루미네선스 연대 해석을 위한 데이터 시각화 및 모델 추천 시스템 개발.pdf`
+(local-only — see above).
 Background: R analysis packages (Luminescence, numOSL, RLumShiny, DRAC — Kreutzer et al.
 2012, Philippe et al. 2019) have advanced OSL/TL analysis, but interpreting the De
 distribution and choosing a statistical model still relies on researcher judgment, and the
@@ -126,7 +143,7 @@ signal/background integral choice shifts De by ~15% and is not recorded in the d
 which is why `signal_params` is carried into the SAR results rather than left implicit.
 
 Open issues carried between sessions live in the `전체점검 및 수정(*).txt` notes at the
-repo root — check the most recent one before picking up work.
+repo root (local-only, not in git) — check the most recent one before picking up work.
 
 When adding a workflow stage, follow the existing pattern: add its schema entry in
 `state_manager.py`, add R functions in `pipeline.R`, expose them through `r_runner.py`'s
