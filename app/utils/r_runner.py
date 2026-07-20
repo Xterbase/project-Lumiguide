@@ -300,6 +300,7 @@ def run_sar_analysis(
     positions: list[int],
     signal_integral: str,
     background_integral: str,
+    plot_dir: str | Path | None = None,
 ) -> dict:
     """
     선택한 POSITION들에 대해 SAR 분석을 일괄 실행하고 De 값을 얻는다.
@@ -323,6 +324,13 @@ def run_sar_analysis(
     if not positions:
         raise ValueError("분석할 POSITION이 선택되지 않았습니다.")
 
+    if plot_dir is not None:
+        plot_dir = Path(plot_dir).resolve()
+        plot_dir.mkdir(parents=True, exist_ok=True)
+        r_plot_dir = plot_dir.as_posix()
+    else:
+        r_plot_dir = ro.NULL
+
     with R_LOCK:
         with default_converter.context():
             result = ro.r["run_sar_analysis"](
@@ -330,6 +338,7 @@ def run_sar_analysis(
                 ro.IntVector([int(p) for p in positions]),
                 str(signal_integral),
                 str(background_integral),
+                r_plot_dir,
             )
 
             signal_range = r_int_list(result.rx2("signal_integral"))
@@ -347,6 +356,13 @@ def run_sar_analysis(
             n_n_list = r_float_list(result.rx2("n_n"))
             recycling_list = r_float_list(result.rx2("recycling_ratio"))
             recuperation_list = r_float_list(result.rx2("recuperation"))
+            plot_file_list = r_str_list(result.rx2("plot_file"))
+
+            qc_position_list = r_int_list(result.rx2("qc_position"))
+            qc_criteria_list = r_str_list(result.rx2("qc_criteria"))
+            qc_value_list = r_float_list(result.rx2("qc_value"))
+            qc_threshold_list = r_float_list(result.rx2("qc_threshold"))
+            qc_status_list = r_str_list(result.rx2("qc_status"))
 
             failed_position_list = r_int_list(result.rx2("failed_position"))
             failed_reason_list = r_str_list(result.rx2("failed_reason"))
@@ -361,8 +377,20 @@ def run_sar_analysis(
             "n_n": n_n_list[i],
             "recycling_ratio": recycling_list[i],
             "recuperation": recuperation_list[i],
+            "plot_file": plot_file_list[i] if i < len(plot_file_list) else None,
         }
         for i in range(len(position_list))
+    ]
+
+    qc_rows = [
+        {
+            "position": qc_position_list[i],
+            "criteria": qc_criteria_list[i],
+            "value": qc_value_list[i],
+            "threshold": qc_threshold_list[i],
+            "status": qc_status_list[i],
+        }
+        for i in range(len(qc_position_list))
     ]
 
     failed = [
@@ -373,12 +401,23 @@ def run_sar_analysis(
         for i in range(len(failed_position_list))
     ]
 
+    # QC 판정: RC.Status == "FAILED"면 품질 기준 미달.
+    # 여기서 걸러 버리지 않고 분류만 해둔다. 실제로 De 분포에 무엇을 넣을지는
+    # 다음 단계에서 연구자가 고르는 편이 이 프로젝트 취지에 맞다.
+    accepted = [a for a in aliquots if str(a["rc_status"]).upper() != "FAILED"]
+    rejected = [a for a in aliquots if str(a["rc_status"]).upper() == "FAILED"]
+
     return {
         "signal_integral": signal_range,
         "background_integral": background_range,
         "n_requested": n_requested,
         "n_success": n_success,
         "n_failed": n_failed,
+        "n_accepted": len(accepted),
+        "n_rejected": len(rejected),
         "aliquots": aliquots,
+        "accepted": accepted,
+        "rejected": rejected,
+        "qc_rows": qc_rows,
         "failed": failed,
     }

@@ -1,8 +1,11 @@
 # app/tabs/sar_tab.py
 
+from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 
+from utils.file_utils import save_sar_results
 from utils.r_runner import run_sar_analysis
 from utils.state_manager import (
     get_current_sample,
@@ -38,22 +41,27 @@ def _render_summary(result: dict) -> None:
     col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("성공", result["n_success"])
+        st.metric("품질 통과", result["n_accepted"])
 
     with col2:
-        st.metric("실패", result["n_failed"])
+        st.metric("품질 미달", result["n_rejected"])
 
     with col3:
-        st.write("Signal integral")
-        st.code(":".join(str(v) for v in result["signal_integral"]))
+        st.metric("분석 실패", result["n_failed"])
 
     with col4:
-        st.write("Background integral")
-        st.code(":".join(str(v) for v in result["background_integral"]))
+        st.write("Integral (signal / background)")
+        st.code(
+            f"{':'.join(str(v) for v in result['signal_integral'])}"
+            f"  /  "
+            f"{':'.join(str(v) for v in result['background_integral'])}"
+        )
 
 
 def _render_aliquot_table(aliquots: list[dict]) -> None:
     df = pd.DataFrame(aliquots)
+
+    df = df.drop(columns=["plot_file"], errors="ignore")
 
     df = df.rename(
         columns={
@@ -68,7 +76,69 @@ def _render_aliquot_table(aliquots: list[dict]) -> None:
         }
     )
 
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width="stretch", hide_index=True)
+
+
+def _render_position_detail(result: dict) -> None:
+    """
+    POSITION 하나를 골라 De / QC 전 항목 / dose-response plot을 함께 본다.
+
+    표만 보면 De 값이 타당한지 판단할 근거가 없다.
+    성장곡선을 눈으로 확인할 수 있어야 결과를 신뢰할 수 있다.
+    """
+    aliquots = result["aliquots"]
+    by_position = {a["position"]: a for a in aliquots}
+
+    selected = st.selectbox(
+        "POSITION 상세",
+        options=sorted(by_position.keys()),
+        key="sar_detail_position",
+    )
+
+    aliquot = by_position[selected]
+
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        st.metric("De (Gy)", f"{aliquot['de']:.1f}" if aliquot["de"] else "N/A")
+        st.metric(
+            "De error",
+            f"{aliquot['de_error']:.1f}" if aliquot["de_error"] else "N/A",
+        )
+
+        status = str(aliquot["rc_status"]).upper()
+
+        if status == "FAILED":
+            st.error(f"품질: {aliquot['rc_status']}")
+        else:
+            st.success(f"품질: {aliquot['rc_status']}")
+
+        st.caption(f"Fit: {aliquot['fit']}")
+
+    with col_right:
+        plot_file = aliquot.get("plot_file")
+
+        if plot_file and Path(plot_file).exists():
+            st.image(plot_file, caption=f"POSITION {selected} dose-response")
+        else:
+            st.info("이 POSITION의 dose-response plot이 없습니다.")
+
+    qc_rows = [q for q in result.get("qc_rows", []) if q["position"] == selected]
+
+    if qc_rows:
+        st.markdown("**품질 기준 상세**")
+
+        qc_df = pd.DataFrame(qc_rows).drop(columns=["position"])
+        qc_df = qc_df.rename(
+            columns={
+                "criteria": "기준",
+                "value": "측정값",
+                "threshold": "임계값",
+                "status": "판정",
+            }
+        )
+
+        st.dataframe(qc_df, width="stretch", hide_index=True)
 
 
 def render_sar_tab() -> None:
@@ -128,6 +198,8 @@ def render_sar_tab() -> None:
     if st.button("SAR 분석 실행", type="primary"):
         set_sar_target_positions(selected)
 
+        paths = sample["paths"]
+
         try:
             with st.spinner(f"POSITION {len(selected)}개 분석 중..."):
                 result = run_sar_analysis(
@@ -135,7 +207,16 @@ def render_sar_tab() -> None:
                     positions=selected,
                     signal_integral=params["signal_integral"],
                     background_integral=params["background_integral"],
+                    plot_dir=paths["curve_plot_dir"],
                 )
+
+            # 분석과 저장을 분리한다. 저장이 실패해도 화면의 결과는 살린다.
+            try:
+                saved = save_sar_results(paths["analysis_results_dir"], result)
+                result["saved_files"] = {k: str(v) for k, v in saved.items()}
+            except Exception as e:
+                result["saved_files"] = {}
+                st.warning(f"결과 CSV 저장에 실패했습니다: {e}")
 
             set_sar_result(result)
 
@@ -163,10 +244,29 @@ def render_sar_tab() -> None:
     # 실패한 POSITION은 조용히 빠뜨리지 않고 사유와 함께 보여준다.
     # 몇 개가 왜 빠졌는지 모르면 De 분포의 표본 수를 신뢰할 수 없다.
     if result["n_failed"] > 0:
-        with st.expander(f"실패한 POSITION {result['n_failed']}개", expanded=True):
+        with st.expander(f"분석 실패 {result['n_failed']}개", expanded=True):
             for item in result["failed"]:
                 st.write(f"**POSITION {item['position']}**")
                 st.code(item["reason"])
+
+    st.divider()
+
+    st.markdown("### POSITION 상세")
+    _render_position_detail(result)
+
+    st.divider()
+
+    saved_files = result.get("saved_files") or {}
+
+    if saved_files:
+        st.markdown("### 저장된 결과")
+        st.caption(
+            "분석 결과는 sample 폴더에 저장됩니다. "
+            "앱을 껐다 켜도 남고, 다음 단계나 외부 도구로 넘길 수 있습니다."
+        )
+
+        for name, file_path in saved_files.items():
+            st.code(file_path)
 
     with st.expander("원본 결과 보기", expanded=False):
         st.json(result)

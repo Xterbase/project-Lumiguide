@@ -585,16 +585,52 @@ save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
 
 
 # POSITION 하나에 대해 SAR을 돌리고 필요한 값만 뽑는다.
-.run_sar_one <- function(path, pos, signal_integral, background_integral) {
+#
+# plot_dir을 주면 dose-response plot을 PNG로 저장한다.
+# 이때 analyse_SAR.CWOSL()을 두 번 부르지 않는다.
+#   plot=TRUE로 png device 안에서 한 번만 돌리면 반환 객체와 PNG를 동시에 얻는다.
+#   (plot=FALSE로 표를 뽑고 plot=TRUE로 그림을 다시 그리면 같은 계산을 두 번 한다)
+.run_sar_one <- function(path, pos, signal_integral, background_integral,
+                         plot_dir = NULL) {
   found <- .load_position_records(path, pos)
+
+  plot_file <- NA_character_
+  want_plot <- !is.null(plot_dir) && !is.na(plot_dir) && nzchar(plot_dir)
+
+  if (want_plot) {
+    plot_file <- file.path(
+      plot_dir,
+      sprintf("position_%03d_dose_response.png", pos)
+    )
+
+    png(filename = plot_file, width = 1400, height = 1000, res = 150)
+
+    # macOS quartz는 dev.off() 시점에야 파일을 쓴다. 아래에서 명시적으로 닫고,
+    # on.exit은 에러로 빠져나갈 때 device가 새는 것만 막는다.
+    device_id <- dev.cur()
+    on.exit(
+      if (dev.cur() == device_id) dev.off(),
+      add = TRUE
+    )
+  }
 
   res <- analyse_SAR.CWOSL(
     object = found$obj,
     signal_integral = signal_integral,
     background_integral = background_integral,
-    plot = FALSE,
+    plot = want_plot,
     verbose = FALSE
   )
+
+  if (want_plot) {
+    dev.off()
+
+    if (!file.exists(plot_file)) {
+      stop(paste0("dose-response plot을 생성하지 못했습니다: ", plot_file))
+    }
+
+    plot_file <- normalizePath(plot_file, winslash = "/", mustWork = TRUE)
+  }
 
   if (is.null(res)) {
     stop("SAR 분석이 결과를 반환하지 않았습니다.")
@@ -628,6 +664,20 @@ save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
     if (col %in% colnames(data)) data[[col]][1] else NA
   }
 
+  # 발췌한 2개 지표만 넘기면 나머지 기준(testdose error, S/N 등)이 사라진다.
+  # 연구자가 왜 FAILED인지 판단하려면 전 항목이 필요하므로 표를 통째로 넘긴다.
+  if (inherits(rc, "try-error") || is.null(rc) || nrow(rc) == 0) {
+    qc_criteria <- character(0)
+    qc_value <- numeric(0)
+    qc_threshold <- numeric(0)
+    qc_status <- character(0)
+  } else {
+    qc_criteria <- as.character(rc$Criteria)
+    qc_value <- suppressWarnings(as.numeric(rc$Value))
+    qc_threshold <- suppressWarnings(as.numeric(rc$Threshold))
+    qc_status <- as.character(rc$Status)
+  }
+
   list(
     de = as.numeric(get_one("De")),
     de_error = as.numeric(get_one("De.Error")),
@@ -635,7 +685,13 @@ save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
     fit = as.character(get_one("Fit")),
     n_n = as.numeric(get_one("n_N")),
     recycling_ratio = pick_rc("Recycling ratio"),
-    recuperation = pick_rc("Recuperation")
+    recuperation = pick_rc("Recuperation"),
+    plot_file = as.character(plot_file),
+
+    qc_criteria = qc_criteria,
+    qc_value = qc_value,
+    qc_threshold = qc_threshold,
+    qc_status = qc_status
   )
 }
 
@@ -646,7 +702,8 @@ save_rlum_record_plot <- function(path, pos, record_index, output_dir) {
 #   De 분포를 만들려면 aliquot이 여러 개 필요한데, 그 중 하나가 fit 실패나
 #   multi-GRAIN으로 막힌다고 나머지 정상 결과까지 버리면 분석이 불가능해진다.
 #   실패한 POSITION은 사유와 함께 따로 모아서 UI가 보여줄 수 있게 반환한다.
-run_sar_analysis <- function(path, positions, signal_integral, background_integral) {
+run_sar_analysis <- function(path, positions, signal_integral, background_integral,
+                             plot_dir = NULL) {
   loaded <- load_bin_data(path)
 
   if (is.null(positions) || length(positions) == 0) {
@@ -681,6 +738,14 @@ run_sar_analysis <- function(path, positions, signal_integral, background_integr
   sig <- .parse_integral(signal_integral, "Signal integral", n_points)
   bg <- .parse_integral(background_integral, "Background integral", n_points)
 
+  if (!is.null(plot_dir) && nzchar(plot_dir)) {
+    if (!dir.exists(plot_dir)) {
+      dir.create(plot_dir, recursive = TRUE)
+    }
+
+    plot_dir <- normalizePath(plot_dir, winslash = "/", mustWork = TRUE)
+  }
+
   ok_position <- integer(0)
   ok_de <- numeric(0)
   ok_de_error <- numeric(0)
@@ -689,13 +754,21 @@ run_sar_analysis <- function(path, positions, signal_integral, background_integr
   ok_n_n <- numeric(0)
   ok_recycling <- numeric(0)
   ok_recuperation <- numeric(0)
+  ok_plot_file <- character(0)
+
+  # QC 표는 POSITION당 여러 행이므로 position 컬럼을 붙여 길게 쌓는다.
+  qc_position <- integer(0)
+  qc_criteria <- character(0)
+  qc_value <- numeric(0)
+  qc_threshold <- numeric(0)
+  qc_status <- character(0)
 
   failed_position <- integer(0)
   failed_reason <- character(0)
 
   for (pos in positions) {
     one <- try(
-      .run_sar_one(path, pos, sig, bg),
+      .run_sar_one(path, pos, sig, bg, plot_dir),
       silent = TRUE
     )
 
@@ -705,6 +778,20 @@ run_sar_analysis <- function(path, positions, signal_integral, background_integr
         failed_reason,
         trimws(as.character(attr(one, "condition")$message))
       )
+
+      # 실패 도중 device가 열렸다 닫히며 남은 빈 PNG는 지운다.
+      # 남겨두면 "plot이 있으니 성공했다"고 오해할 수 있다.
+      if (!is.null(plot_dir) && nzchar(plot_dir)) {
+        stale <- file.path(
+          plot_dir,
+          sprintf("position_%03d_dose_response.png", pos)
+        )
+
+        if (file.exists(stale)) {
+          unlink(stale)
+        }
+      }
+
       next
     }
 
@@ -716,6 +803,17 @@ run_sar_analysis <- function(path, positions, signal_integral, background_integr
     ok_n_n <- c(ok_n_n, one$n_n)
     ok_recycling <- c(ok_recycling, one$recycling_ratio)
     ok_recuperation <- c(ok_recuperation, one$recuperation)
+    ok_plot_file <- c(ok_plot_file, one$plot_file)
+
+    n_rows <- length(one$qc_criteria)
+
+    if (n_rows > 0) {
+      qc_position <- c(qc_position, rep(pos, n_rows))
+      qc_criteria <- c(qc_criteria, one$qc_criteria)
+      qc_value <- c(qc_value, one$qc_value)
+      qc_threshold <- c(qc_threshold, one$qc_threshold)
+      qc_status <- c(qc_status, one$qc_status)
+    }
   }
 
   if (length(ok_position) == 0) {
@@ -744,6 +842,13 @@ run_sar_analysis <- function(path, positions, signal_integral, background_integr
     n_n = as.numeric(ok_n_n),
     recycling_ratio = as.numeric(ok_recycling),
     recuperation = as.numeric(ok_recuperation),
+    plot_file = as.character(ok_plot_file),
+
+    qc_position = as.integer(qc_position),
+    qc_criteria = as.character(qc_criteria),
+    qc_value = as.numeric(qc_value),
+    qc_threshold = as.numeric(qc_threshold),
+    qc_status = as.character(qc_status),
 
     failed_position = as.integer(failed_position),
     failed_reason = as.character(failed_reason)

@@ -340,6 +340,52 @@ def list_samples(samples_dir: Path) -> list[dict]:
 # ============================================================
 # 6. sample 삭제
 # ============================================================
+def save_sar_results(analysis_results_dir: Path, result: dict) -> dict:
+    """
+    SAR 결과를 CSV로 저장한다.
+
+    결과가 세션 메모리에만 있으면 앱을 껐다 켤 때마다 재분석해야 하고,
+    다음 단계(De 분포)나 외부 도구로 넘길 수도 없다.
+    De 값은 연구 산출물이므로 디스크에 남긴다.
+
+    저장 파일:
+        sar_de_table.csv        전체 aliquot의 De/오차/품질
+        sar_qc_table.csv        POSITION별 rejection criteria 전 항목
+        sar_accepted_de.csv     RC.Status가 FAILED가 아닌 것
+        sar_rejected_de.csv     FAILED인 것
+        sar_failed_positions.csv  분석 자체가 실패한 POSITION과 사유
+
+    반환: {이름: 저장 경로} — 실제로 저장한 것만 담는다.
+    """
+
+    import pandas as pd
+
+    analysis_results_dir = Path(analysis_results_dir)
+    analysis_results_dir.mkdir(parents=True, exist_ok=True)
+
+    tables = {
+        "de_table": (result.get("aliquots"), "sar_de_table.csv"),
+        "qc_table": (result.get("qc_rows"), "sar_qc_table.csv"),
+        "accepted": (result.get("accepted"), "sar_accepted_de.csv"),
+        "rejected": (result.get("rejected"), "sar_rejected_de.csv"),
+        "failed": (result.get("failed"), "sar_failed_positions.csv"),
+    }
+
+    saved = {}
+
+    for name, (rows, file_name) in tables.items():
+        # 빈 표는 만들지 않는다. 빈 CSV가 남아 있으면 이전 분석 결과인지
+        # 이번에 아무것도 안 나온 것인지 구분되지 않는다.
+        if not rows:
+            continue
+
+        file_path = analysis_results_dir / file_name
+        pd.DataFrame(rows).to_csv(file_path, index=False, encoding="utf-8-sig")
+        saved[name] = file_path
+
+    return saved
+
+
 def delete_sample(sample_dir: Path) -> None:
     """
     sample 폴더 전체를 삭제한다.
