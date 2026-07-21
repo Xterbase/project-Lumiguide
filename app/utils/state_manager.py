@@ -43,7 +43,7 @@ DE_AFFECTING_PARAMS = ("signal_integral", "background_integral")
 # depends_on에는 "내가 직접 쓰는 stage"만 적는다. 간접 의존은 자동으로 따라간다.
 # 순서가 아니라 의존 관계가 기준이므로, 정의 순서를 바꿔도 무효화 결과는 같다.
 #
-# 예) signal(어느 POSITION 곡선을 볼지)은 sar가 의존하지 않는다.
+# 예) signal(어느 POSITION 곡선을 볼지)은 sar이 의존하지 않는다.
 #     POSITION을 바꿔도 이미 돌려둔 SAR 결과는 살아남아야 하기 때문이다.
 
 SESSION_SCHEMA: dict[str, dict] = {
