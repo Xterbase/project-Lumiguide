@@ -62,12 +62,14 @@ All commands assume the repo root and the project's own virtualenv (Python 3.14)
 ```bash
 source venv/bin/activate          # activate the venv first
 streamlit run app/main.py         # run the main app (primary entry point)
-streamlit run app/prototypes/version1_upload.py   # run the standalone upload prototype
 pip install -r requirements.txt   # install/refresh dependencies
 ```
 
-There is no test suite, linter, or build step configured yet. `rpy2` requires a working
-R installation with the `Luminescence` package available on the system.
+There is no test suite or linter configured. Each `app/utils/` module carries an
+`assert`-based self-check in its `__main__` block instead — run any of them directly
+(`venv/bin/python app/utils/state_manager.py`). `r_runner.py`'s generates its own R
+fixture, so it needs no committed data. `rpy2` requires a working R installation with
+the `Luminescence` package available on the system.
 
 ## Architecture
 

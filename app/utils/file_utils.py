@@ -5,7 +5,6 @@ import hashlib
 import json
 from pathlib import Path
 import re
-import shutil
 
 
 # ============================================================
@@ -401,19 +400,6 @@ def save_sar_results(analysis_results_dir: Path, result: dict) -> dict:
         saved[name] = file_path
 
     return saved
-
-
-def delete_sample(sample_dir: Path) -> None:
-    """
-    sample 폴더 전체를 삭제한다.
-
-    주의:
-        나중에 UI에서 삭제 버튼을 만들 때만 사용.
-        지금 1단계에서는 굳이 호출하지 않아도 됨.
-    """
-
-    if sample_dir.exists() and sample_dir.is_dir():
-        shutil.rmtree(sample_dir)
 
 
 # ============================================================

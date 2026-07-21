@@ -1,7 +1,3 @@
-fastapi
-uvicorn
+pandas
 rpy2
-openai
-python-multipart
-python-dotenv
 streamlit

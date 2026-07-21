@@ -291,10 +291,6 @@ def set_selected_signal_position(position: int) -> None:
         invalidate_from("signal")
 
 
-def get_selected_signal_position() -> int | None:
-    return get_value(SELECTED_SIGNAL_POSITION_KEY)
-
-
 def set_rlum_records(records: dict) -> None:
     set_value(RLUM_RECORDS_KEY, records)
 
@@ -318,10 +314,6 @@ def set_selected_record_info(record_info: dict) -> None:
 
     if changed:
         invalidate_from("record")
-
-
-def get_selected_record_info() -> dict | None:
-    return get_value(SELECTED_RECORD_INFO_KEY)
 
 
 def set_rlum_record_plot_result(result: dict) -> None:
@@ -381,10 +373,6 @@ def set_sar_target_positions(positions: list[int]) -> None:
     """
     set_value(SAR_TARGET_POSITIONS_KEY, positions)
     invalidate_from("sar")
-
-
-def get_sar_target_positions() -> list[int] | None:
-    return get_value(SAR_TARGET_POSITIONS_KEY)
 
 
 def set_sar_result(result: dict) -> None:

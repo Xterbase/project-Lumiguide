@@ -13,7 +13,6 @@ from utils.state_manager import (
     get_signal_params,
     has_signal_params,
     set_sar_target_positions,
-    get_sar_target_positions,
     set_sar_result,
     get_sar_result,
     has_sar_result,

@@ -6,9 +6,7 @@ from utils.r_runner import inspect_rlum_records, generate_rlum_record_plot
 from utils.state_manager import (
     get_current_sample,
     get_position_result,
-    get_selected_signal_position,
     set_selected_signal_position,
-    get_selected_record_info,
     set_rlum_records,
     get_rlum_records,
     has_rlum_records,
