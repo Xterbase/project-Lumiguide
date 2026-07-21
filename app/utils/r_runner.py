@@ -421,3 +421,177 @@ def run_sar_analysis(
         "qc_rows": qc_rows,
         "failed": failed,
     }
+
+
+# ============================================================
+# 셀프 체크
+# ============================================================
+# R 계층은 파이썬 쪽에서 R 벡터를 손으로 풀어 dict로 만들기 때문에,
+# R 함수가 바뀌거나 Luminescence 버전이 오르면 조용히 모양이 어긋난다.
+# 실제 분석을 한 번 통과시켜서 반환 모양과 값이 그대로인지 확인한다.
+#
+# 검증 데이터는 저장소에 없다(outputs/는 git에서 제외). Luminescence가
+# 들고 있는 CWOSL.SAR.Data 예제를 그때그때 임시 폴더에 써서 쓴다.
+#
+# 실행: venv/bin/python app/utils/r_runner.py   (약 2초)
+
+def _write_fixture(target_dir: Path) -> Path:
+    """Luminescence 예제 데이터를 rda로 저장해 검증용 입력을 만든다."""
+    import subprocess
+
+    fixture = target_dir / "fixture.rda"
+
+    script = (
+        'suppressMessages(library(Luminescence)); '
+        'data(ExampleData.BINfileData, envir=environment()); '
+        f'save(CWOSL.SAR.Data, file="{fixture.as_posix()}")'
+    )
+
+    done = subprocess.run(
+        ["Rscript", "-e", script],
+        capture_output=True,
+        text=True,
+    )
+
+    if done.returncode != 0 or not fixture.exists():
+        raise RuntimeError(f"검증용 fixture 생성 실패: {done.stderr.strip()}")
+
+    return fixture
+
+
+if __name__ == "__main__":
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        fixture = _write_fixture(tmp_dir)
+
+        # --------------------------------------------------------
+        # 1. 파일 검사
+        # --------------------------------------------------------
+        info = inspect_uploaded_file(fixture)
+
+        assert info["positions"] == list(range(1, 25)), \
+            f"POSITION 목록이 달라졌다: {info['positions']}"
+        assert info["n_positions"] == 24, f"POSITION 수: {info['n_positions']}"
+        assert info["object_name"] == "CWOSL.SAR.Data", \
+            f"rda에서 고른 객체 이름: {info['object_name']}"
+        assert info["n_candidates"] == 1, "후보 객체가 하나여야 한다"
+
+        # --------------------------------------------------------
+        # 2. record 검사 — 모든 컬럼의 길이가 같아야 한다.
+        #    하나라도 어긋나면 build_record_rows가 조용히 잘린 표를 만든다.
+        # --------------------------------------------------------
+        recs = inspect_rlum_records(fixture, 1)
+
+        n = len(recs["record_index"])
+        assert n == 30, f"POSITION 1의 record 수: {n}"
+
+        for key in ("record_type", "dtype", "comment", "run", "set",
+                    "irr_time", "npoints", "low", "high",
+                    "an_temp", "an_time", "light_source"):
+            assert len(recs[key]) == n, f"'{key}' 길이가 record_index와 다르다"
+
+        assert {"OSL", "IRSL", "TL"} <= set(recs["record_type"]), \
+            f"기대한 curve type이 없다: {set(recs['record_type'])}"
+
+        # --------------------------------------------------------
+        # 3. 곡선 PNG — macOS quartz는 dev.off() 시점에야 파일을 쓴다.
+        #    이 순서가 틀어지면 예외 없이 빈 파일만 남으므로, 경로가
+        #    아니라 "디스크에 실제로 있고 비어 있지 않은지"를 본다.
+        # --------------------------------------------------------
+        osl_index = next(
+            idx for idx, kind in zip(recs["record_index"], recs["record_type"])
+            if kind == "OSL"
+        )
+
+        plot = generate_rlum_record_plot(fixture, tmp_dir, 1, osl_index)
+        plot_file = Path(plot["plot_file"])
+
+        assert plot_file.exists(), f"곡선 PNG가 생성되지 않았다: {plot_file}"
+        assert plot_file.stat().st_size > 0, "곡선 PNG가 비어 있다"
+
+        # --------------------------------------------------------
+        # 4. SAR 분석
+        # --------------------------------------------------------
+        sar_dir = tmp_dir / "sar"
+        sar_dir.mkdir()
+
+        sar = run_sar_analysis(fixture, [1, 2], "1:2", "900:1000", sar_dir)
+
+        # analyse_SAR.CWOSL()은 min/max가 아니라 벡터를 받는다.
+        # 이 형태가 깨지면 De가 통째로 달라지므로 왕복해서 확인한다.
+        assert sar["signal_integral"] == [1, 2], \
+            f"signal_integral: {sar['signal_integral']}"
+        assert sar["background_integral"] == [900, 1000], \
+            f"background_integral: {sar['background_integral']}"
+
+        # 배치는 실패를 모아서 돌려준다. 요청한 수와 성공+실패가 맞아야
+        # 한 aliquot이 조용히 사라지지 않는다.
+        assert sar["n_requested"] == 2, f"n_requested: {sar['n_requested']}"
+        assert sar["n_success"] + sar["n_failed"] == sar["n_requested"], \
+            "요청 수와 성공+실패 수가 맞지 않는다"
+        assert len(sar["aliquots"]) == sar["n_success"], \
+            "aliquot 수와 n_success가 맞지 않는다"
+        assert len(sar["accepted"]) + len(sar["rejected"]) == len(sar["aliquots"]), \
+            "accepted + rejected가 전체 aliquot과 맞지 않는다"
+
+        assert sar["qc_rows"], "QC 표가 비어 있다"
+        assert {"criteria", "position", "status", "threshold", "value"} \
+            <= set(sar["qc_rows"][0]), f"QC 컬럼이 달라졌다: {sar['qc_rows'][0].keys()}"
+
+        # --------------------------------------------------------
+        # 5. De 값
+        #    아래 범위는 Luminescence 1.2.1에서 실측한 값 기준이다
+        #    (POSITION 1: 1661.3 Gy / POSITION 2: 1534.9 Gy).
+        #    여기서 벗어나면 Luminescence를 올렸거나 계산이 바뀐 것이다.
+        #    어느 쪽인지는 연대값에 직접 영향을 주므로 사람이 판단해야 한다.
+        # --------------------------------------------------------
+        expected_de = {1: (1600, 1720), 2: (1480, 1590)}
+
+        for aliquot in sar["aliquots"]:
+            pos = aliquot["position"]
+            de = aliquot["de"]
+
+            assert isinstance(de, float) and de == de, \
+                f"POSITION {pos}의 De가 수치가 아니다: {de}"
+
+            low, high = expected_de[pos]
+            assert low < de < high, \
+                f"POSITION {pos}의 De가 실측 범위를 벗어났다: {de:.1f} (기대 {low}~{high})"
+
+            assert aliquot["rc_status"], f"POSITION {pos}에 QC 판정이 없다"
+
+            # 성장곡선 PNG도 실제로 쓰였는지 본다 (3번과 같은 이유)
+            dose_plot = Path(aliquot["plot_file"])
+            assert dose_plot.exists() and dose_plot.stat().st_size > 0, \
+                f"POSITION {pos}의 성장곡선 PNG가 없거나 비어 있다"
+
+        # --------------------------------------------------------
+        # 6. 입력 검증은 R에서 막고 파이썬까지 예외로 올라와야 한다.
+        #    조용히 빈 결과를 돌려주면 UI가 "분석 성공"으로 표시한다.
+        # --------------------------------------------------------
+        for bad_input, label in (
+            (tmp_dir / "없는파일.rda", "없는 경로"),
+            (tmp_dir / "fixture.txt", "지원하지 않는 확장자"),
+        ):
+            if label == "지원하지 않는 확장자":
+                bad_input.write_text("not a bin file")
+
+            try:
+                inspect_uploaded_file(bad_input)
+                raise AssertionError(f"{label}인데 예외가 나지 않았다")
+            except AssertionError:
+                raise
+            except Exception:
+                pass
+
+        try:
+            run_sar_analysis(fixture, [1, 99], "1:2", "900:1000", sar_dir)
+            raise AssertionError("파일에 없는 POSITION인데 예외가 나지 않았다")
+        except AssertionError:
+            raise
+        except Exception:
+            pass
+
+    print("r_runner self-check OK")
