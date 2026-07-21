@@ -21,8 +21,11 @@ of it (`.gitignore`). They exist in the working directory but not in git history
 |---|---|
 | `루미네선스 연대 해석을 위한 데이터 시각화 및 모델 추천 시스템 개발.pdf` | Development proposal — the product plan below is derived from it |
 | `멀티에이전트_계획.txt` | Internal planning: who builds what, when to parallelize |
-| `전체점검 및 수정(*).txt` | Dated working notes: fixes, design rationale, open issues |
-| `이슈정리_업로드단계.txt` | Earlier issue log for the upload stage |
+The dated working notes (`전체점검 및 수정(*).txt`, `이슈정리_업로드단계.txt`) were folded
+into these two documents on 2026-07-21 and deleted. Keeping one issue list per session meant
+re-diffing three files to learn what was still open; the surviving items now live in the
+planning doc's issue list, and the technical gotchas they recorded live below, next to the
+code they concern.
 
 References to these files elsewhere in this document point at local copies. If they are
 missing, ask the user rather than assuming the information is unavailable — do not commit
@@ -92,12 +95,20 @@ apart once already (De Distribution was missing, so Model Recommendation sat at 
   `rpy2.robjects.r[...]` directly from tabs or elsewhere. R results are manually unpacked
   from R vectors into plain Python dicts here (see `inspect_uploaded_file`).
 
+  **Unpack R vectors through the `r_*_list` / `r_scalar_*` helpers, never with a bare
+  `int(x) if x is not None`.** rpy2 does not turn R's `NA` into `None`; it hands back a
+  per-type sentinel, so that guard is dead code that silently admits garbage — `NA_integer_`
+  arrives as `-2147483648`, `NA_character_` as the literal string `"NA_character_"`,
+  `NA_real_` as `nan`. Worse, `NACharacterType` subclasses `str`, so `isinstance` will not
+  catch it either; `is_r_na()` compares by `is` identity for exactly this reason. A record
+  table showing `-2147483648` for RUN/SET is this bug, not a data problem.
+
 - **`R/pipeline.R`** holds the analysis functions. It reads Risø `.bin` / `.rda` /
   `.rdata` files into a `Risoe.BINfileData` object (`load_bin_data`, LRU-cached by
   path+mtime+size), summarizes positions/records (`inspect_positions`,
   `inspect_rlum_records_by_position`), plots curves (`save_rlum_record_plot`), and runs
   SAR (`run_sar_analysis`). Input validation and error messages live in R and surface
-  up to the Streamlit UI as exceptions. Three things bite here:
+  up to the Streamlit UI as exceptions. Several things bite here:
   - **macOS quartz png writes the file only at `dev.off()`.** Close the device
     explicitly right after drawing, then check `file.exists()`; leave `on.exit` only as
     a leak guard. Getting this order wrong makes every plot silently fail.
@@ -106,6 +117,17 @@ apart once already (De Distribution was missing, so Model Recommendation sat at 
   - **Batch stages collect per-item failures instead of aborting.** `run_sar_analysis`
     returns `failed_position` + `failed_reason` so one bad aliquot doesn't discard the
     rest — a De distribution needs many aliquots, and a dropped one must say why.
+  - **`Risoe.BINfileData2RLum.Analysis()` returns a list *per GRAIN*, not per record.** In a
+    single-grain measurement (several GRAINs under one POSITION) `length(obj)` is the GRAIN
+    count, so the old `min(n_meta, length(obj))` truncation silently drew a whole-GRAIN curve
+    in place of the record the user picked. `.load_position_records()` now validates this in
+    one place — both the record listing and the plot path go through it — and `stop()`s
+    rather than guessing. Multi-GRAIN files are therefore *blocked*, not supported; see the
+    planning doc, since MAM/FMM target exactly that data.
+  - **The `.bin_cache` key is `path + mtime + size` only.** That is enough today because one
+    file yields one object. If an object picker is ever added (an `.rda` may hold several
+    `Risoe.BINfileData`), `object_name` **must** join the key, or switching objects will
+    return the cached previous one.
 
 - **`app/utils/state_manager.py`** is the most non-obvious file. It models the pipeline as
   **stages**, each with `input` (user/widget values), `output` (computed results), and
@@ -138,6 +160,10 @@ apart once already (De Distribution was missing, so Model Recommendation sat at 
   hash matches) and a fixed folder layout under `outputs/samples/{sample_id}/`: `raw/`,
   `inspect/`, `curve_plot/`, `analysis_results/`. **Analysis results must be written to
   disk, not just held in session state** — that is a project requirement, not a nicety.
+  The uploaded file itself has to hit disk for a mechanical reason too: `st.file_uploader()`
+  yields a memory buffer rather than a file, rpy2 has no way to hand that buffer to R, and
+  every `pipeline.R` entry point takes a path. (Consequence: deleting a sample folder while
+  its `raw_path` still sits in session state raises `FileNotFoundError` — reset and re-upload.)
   `save_sar_results()` writes the SAR CSVs; dose-response PNGs go to `curve_plot/`. It
   deletes the previous run's CSVs before writing and stamps the signal/background integrals
   onto every row, so a CSV on disk can never be a silent mix of two runs or a De whose
@@ -175,8 +201,27 @@ yield the same model for the result to be publishable. The same logic applies up
 signal/background integral choice shifts De by ~15% and is not recorded in the data file,
 which is why `signal_params` is carried into the SAR results rather than left implicit.
 
-Open issues carried between sessions live in the `전체점검 및 수정(*).txt` notes at the
-repo root (local-only, not in git) — check the most recent one before picking up work.
+The same principle governs quality control, and it is a design rule rather than an
+oversight: **SAR classifies aliquots, it does not filter them.** `RC.Status == "FAILED"`
+splits accepted from rejected and both are kept and written out, with all six
+`rejection.criteria` rows per POSITION rather than a selected few. Dropping an aliquot
+automatically would insert one more judgement that changes the result while leaving no
+record of itself — the exact problem this project exists to reduce. Whether the De
+distribution stage should keep that stance is still open (see the planning doc).
+
+Verification baseline, useful for spotting drift: `ExampleData.rda` has 24 POSITIONs; a
+clean SAR run yields 24/24 analysed, 22 passing QC (POSITION 8 and 11 fail), De spanning
+684–1905 Gy with a coefficient of variation around 17%. `r_runner.py`'s self-check asserts
+per-POSITION De ranges from this baseline.
+
+Open issues carried between sessions live in one place: the issue list in
+`멀티에이전트_계획.txt` (local-only, not in git). Check it before picking up work, and keep
+it as the single list — do not start a new dated note file.
+
+Two of those items constrain what can be built next, so they are worth knowing here:
+multi-GRAIN (single-grain) files are currently blocked rather than supported, and they are
+precisely what MAM/FMM are for; and whether the De distribution stage keeps or drops
+QC-rejected aliquots is undecided, which shapes that stage's schema.
 
 When adding a workflow stage, follow the existing pattern: add its schema entry in
 `state_manager.py`, add R functions in `pipeline.R`, expose them through `r_runner.py`'s
