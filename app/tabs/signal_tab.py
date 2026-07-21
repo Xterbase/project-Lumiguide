@@ -9,8 +9,6 @@ from utils.state_manager import (
     get_selected_signal_position,
     set_selected_signal_position,
     get_selected_record_info,
-    reset_signal_position_outputs,
-    reset_selected_record_outputs,
     set_rlum_records,
     get_rlum_records,
     has_rlum_records,
@@ -83,9 +81,7 @@ def render_signal_tab():
         key="signal_position_selectbox",
     )
 
-    if get_selected_signal_position() != selected_position:
-        set_selected_signal_position(selected_position)
-        reset_signal_position_outputs()
+    set_selected_signal_position(selected_position)
 
     if st.button("선택한 POSITION의 record 불러오기", type="primary"):
         try:
@@ -146,9 +142,7 @@ def render_signal_tab():
             key="signal_record_selectbox",
         )
 
-        if get_selected_record_info() != selected_record:
-            set_selected_record_info(selected_record)
-            reset_selected_record_outputs()
+        set_selected_record_info(selected_record)
 
         if st.button("선택한 record curve 보기", type="primary"):
             try:
