@@ -20,7 +20,7 @@ of it (`.gitignore`). They exist in the working directory but not in git history
 | File | What it is |
 |---|---|
 | `루미네선스 연대 해석을 위한 데이터 시각화 및 모델 추천 시스템 개발.pdf` | Development proposal — the product plan below is derived from it |
-| `LumiGuide_멀티에이전트_기획정리.txt` | Internal planning: layer split, multi-agent rollout |
+| `멀티에이전트_계획.txt` | Internal planning: who builds what, when to parallelize |
 | `전체점검 및 수정(*).txt` | Dated working notes: fixes, design rationale, open issues |
 | `이슈정리_업로드단계.txt` | Earlier issue log for the upload stage |
 
@@ -159,12 +159,15 @@ wrappers in `state_manager.py` (the documented call-site vocabulary).
 
 `requirements.txt` deliberately lists only what the code imports (`pandas`, `rpy2`,
 `streamlit`). The FastAPI / LLM dependencies it used to carry were removed because no such
-code exists yet; re-add them when that layer is actually written, not before. Two decisions
-are explicitly still open (see `LumiGuide_멀티에이전트_기획정리.txt`): whether model
-recommendation is LLM-based or rule-based, and the API contract / data schema. Read that doc before
-large structural changes — it defines the intended layer split and the multi-agent rollout
-plan (analysis / backend / frontend via git worktrees), which is why the layer boundaries
-above matter.
+code exists yet; re-add them when that layer is actually written, not before. One decision is
+explicitly still open (see `멀티에이전트_계획.txt`): whether model recommendation is
+LLM-based or rule-based. The original plan's other open item — an API contract / data schema
+— was retired: it assumed a FastAPI boundary that was never built and has no current
+justification for a single-user local tool. The stage contract lives in `SESSION_SCHEMA` and
+the R return values instead, deliberately next to the code so it cannot go stale separately.
+Read that planning doc before large structural changes; it also records why the
+analysis/backend/frontend agent split was dropped in favour of a design → implement → verify
+pipeline.
 
 On the LLM-vs-rule question, note that reproducibility is the constraint that decides it:
 CAM/MAM/FMM selection criteria are established in the literature, and the same input must
