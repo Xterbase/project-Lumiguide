@@ -51,8 +51,8 @@ Four required capabilities:
 4. **Researcher interface** — let a researcher upload data and read results intuitively.
 
 This target pipeline is what the `SESSION_SCHEMA` stages in `state_manager.py` and the
-`app/main.py` tabs are meant to grow into; today only the first (upload / inspect) step
-exists. Capability (2)'s recommendation logic is exactly the still-open "LLM vs
+`app/main.py` tabs are meant to grow into; today it reaches as far as SAR (see Current
+status). Capability (2)'s recommendation logic is exactly the still-open "LLM vs
 rule-based" decision noted below, and research reproducibility should weigh on it.
 
 ## Commands
@@ -108,21 +108,40 @@ apart once already (De Distribution was missing, so Model Recommendation sat at 
     rest — a De distribution needs many aliquots, and a dropped one must say why.
 
 - **`app/utils/state_manager.py`** is the most non-obvious file. It models the pipeline as
-  ordered **stages**, each with `input` (user/widget values) and `output` (computed
-  results), defined once in `SESSION_SCHEMA`. The core rule: *when a stage's input changes,
-  that stage's output and every downstream stage are invalidated* (`invalidate_from`).
-  Because `STAGE_ORDER` is derived from the schema's insertion order, **adding a new stage
-  or result key means editing only `SESSION_SCHEMA` — the reset/invalidation logic never
-  changes.** The nested schema is flattened into `st.session_state` (flat keys are safest
-  for widget binding). Prefer the generic accessors (`set_value`/`get_value`/`has_value`)
-  and the stage wrappers over touching `st.session_state` directly.
+  **stages**, each with `input` (user/widget values), `output` (computed results), and
+  `depends_on` (the stages it directly reads), defined once in `SESSION_SCHEMA`. The core
+  rule: *when a stage's input changes, that stage's output and every stage that depends on
+  it — directly or transitively — are invalidated* (`invalidate_from`). **Dependency, not
+  schema order, is the criterion.** Changing the inspected POSITION clears that POSITION's
+  records and curve plot but leaves the SAR results standing, because `sar` does not depend
+  on `signal`. Adding a stage therefore means adding a `SESSION_SCHEMA` entry with its
+  `depends_on` — the invalidation logic never changes, and there are no hand-written
+  exception functions. The nested schema is flattened into `st.session_state` (flat keys are
+  safest for widget binding). Prefer the generic accessors
+  (`set_value`/`get_value`/`has_value`) and the stage wrappers over touching
+  `st.session_state` directly.
+
+  **Pipeline widgets must not carry `key=`.** Streamlit derives a keyless widget's identity
+  from its parameters, so a widget whose `value=` / `options=` come from pipeline state
+  resets by itself when that state is invalidated — which is why the integral inputs read
+  their default from `get_signal_params()`. Give such a widget a `key=` and it freezes:
+  it keeps showing the previous file's integral after a new upload has already cleared
+  `signal_params`. Moving the widget key *into* `SESSION_SCHEMA` is **not** the fix —
+  Streamlit raises if code writes a widget's key after that widget rendered, and
+  `signal_tab.py` renders the inputs before calling `set_signal_params()`. The self-check
+  scans `app/tabs/` for `key=` strings and asserts none collide with schema keys. Widgets
+  that hold a lookup value rather than pipeline state (`sar_detail_position` selects a
+  POSITION number, looked up against the current result) keep their key deliberately.
 
 - **`app/utils/file_utils.py`** handles upload and result persistence. Each upload gets a
   sanitized, de-duplicated `sample_id` (`{name}_{YYYYMMDD}_{NN}`, reused when the content
   hash matches) and a fixed folder layout under `outputs/samples/{sample_id}/`: `raw/`,
   `inspect/`, `curve_plot/`, `analysis_results/`. **Analysis results must be written to
   disk, not just held in session state** — that is a project requirement, not a nicety.
-  `save_sar_results()` writes the SAR CSVs; dose-response PNGs go to `curve_plot/`.
+  `save_sar_results()` writes the SAR CSVs; dose-response PNGs go to `curve_plot/`. It
+  deletes the previous run's CSVs before writing and stamps the signal/background integrals
+  onto every row, so a CSV on disk can never be a silent mix of two runs or a De whose
+  integral is unknown.
 
 ## Current status & direction
 
@@ -130,10 +149,19 @@ Implemented: **upload**, **signal analysis**, **SAR analysis** (De values, QC
 classification, per-position dose-response plots, CSV output). Still placeholders: **De
 distribution** and **model recommendation**.
 
-`requirements.txt` lists `fastapi` / `uvicorn` / `openai` / `python-dotenv`, but no
-FastAPI backend or LLM code exists yet — these are planned. Two decisions are explicitly
-still open (see `LumiGuide_멀티에이전트_기획정리.txt`): whether model recommendation is
-LLM-based or rule-based, and the API contract / data schema. Read that planning doc before
+The standalone `app/prototypes/` apps were deleted — they duplicated the upload and signal
+tabs and had drifted (one kept its own `session_state` keys, bypassing `state_manager`
+entirely). The self-checks now serve the purpose the prototypes used to: isolating whether
+a fault is in the UI or in `utils`/R. Three things are unused on purpose and should not be
+re-flagged as dead code: `file_utils.list_samples` (the planned Research Workspace restore),
+`clear_bin_cache` in `pipeline.R` (manual use from the R console), and the thin per-key
+wrappers in `state_manager.py` (the documented call-site vocabulary).
+
+`requirements.txt` deliberately lists only what the code imports (`pandas`, `rpy2`,
+`streamlit`). The FastAPI / LLM dependencies it used to carry were removed because no such
+code exists yet; re-add them when that layer is actually written, not before. Two decisions
+are explicitly still open (see `LumiGuide_멀티에이전트_기획정리.txt`): whether model
+recommendation is LLM-based or rule-based, and the API contract / data schema. Read that doc before
 large structural changes — it defines the intended layer split and the multi-agent rollout
 plan (analysis / backend / frontend via git worktrees), which is why the layer boundaries
 above matter.
