@@ -22,6 +22,10 @@ SIGNAL_PARAMS_KEY = "signal_params"
 SAR_TARGET_POSITIONS_KEY = "sar_target_positions"
 SAR_RESULT_KEY = "sar_result"
 
+# signal_params 중 De 값을 실제로 바꾸는 항목.
+# 나머지(reference_*)는 출처 기록용이라 바뀌어도 SAR 결과는 유효하다.
+DE_AFFECTING_PARAMS = ("signal_integral", "background_integral")
+
 
 
 # ============================================================
@@ -36,10 +40,15 @@ SAR_RESULT_KEY = "sar_result"
 # 라는 규칙 하나로 모든 reset이 자동으로 파생되기 때문에,
 # 새 결과 키를 추가해도 reset 로직은 건드릴 필요가 없다.
 #
-# dict는 삽입 순서를 보존하므로, 여기 정의된 순서가 곧 파이프라인 순서다.
+# depends_on에는 "내가 직접 쓰는 stage"만 적는다. 간접 의존은 자동으로 따라간다.
+# 순서가 아니라 의존 관계가 기준이므로, 정의 순서를 바꿔도 무효화 결과는 같다.
+#
+# 예) signal(어느 POSITION 곡선을 볼지)은 sar이 의존하지 않는다.
+#     POSITION을 바꿔도 이미 돌려둔 SAR 결과는 살아남아야 하기 때문이다.
 
-SESSION_SCHEMA: dict[str, dict[str, dict]] = {
+SESSION_SCHEMA: dict[str, dict] = {
     "upload": {
+        "depends_on": [],
         "input": {
             UPLOADED_SAMPLE_KEY: None,
             UPLOADED_FILE_NAME_KEY: None,
@@ -50,6 +59,7 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
         },
     },
     "signal": {
+        "depends_on": ["upload"],
         "input": {
             SELECTED_SIGNAL_POSITION_KEY: None,
         },
@@ -58,6 +68,7 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
         },
     },
     "record": {
+        "depends_on": ["signal"],
         "input": {
             SELECTED_RECORD_INFO_KEY: None,
         },
@@ -66,12 +77,14 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
         },
     },
     "sar_setup": {
+        "depends_on": ["upload"],
         "input": {
             SIGNAL_PARAMS_KEY: None,
         },
         "output": {},
     },
     "sar": {
+        "depends_on": ["sar_setup"],
         "input": {
             SAR_TARGET_POSITIONS_KEY: None,
         },
@@ -80,8 +93,6 @@ SESSION_SCHEMA: dict[str, dict[str, dict]] = {
         },
     },
 }
-# 파이프라인 순서 (스키마 정의 순서에서 파생 — 따로 손으로 관리하지 않는다)
-STAGE_ORDER: list[str] = list(SESSION_SCHEMA.keys())
 
 
 # ============================================================
@@ -104,9 +115,29 @@ def _stage_all(stage: str) -> dict:
 def _all_defaults() -> dict:
     """이 모듈이 소유한 모든 key의 기본값 (평면)."""
     merged: dict = {}
-    for stage in STAGE_ORDER:
+    for stage in SESSION_SCHEMA:
         merged.update(_stage_all(stage))
     return merged
+
+
+def _dependents_of(stage: str) -> list[str]:
+    """
+    stage에 직접·간접으로 의존하는 stage 전부를 스키마 정의 순서로 반환한다.
+
+    depends_on을 거꾸로 따라간다. 이미 찾은 stage는 다시 타지 않으므로
+    스키마에 순환이 생겨도 무한 재귀에 빠지지 않는다.
+    """
+    found: set[str] = set()
+
+    def walk(target: str) -> None:
+        for name, spec in SESSION_SCHEMA.items():
+            if target in spec["depends_on"] and name not in found:
+                found.add(name)
+                walk(name)
+
+    walk(stage)
+
+    return [name for name in SESSION_SCHEMA if name in found]
 
 
 def _reset_keys(defaults: dict) -> None:
@@ -161,27 +192,21 @@ def invalidate_from(stage: str) -> None:
 
     규칙:
       - 해당 stage의 output을 비운다 (방금 새로 준 input은 유지)
-      - 이후 모든 stage를 input/output 통째로 비운다
+      - 그 stage에 의존하는 모든 stage를 input/output 통째로 비운다
 
-    예) 새 파일 업로드 → invalidate_from("upload")
-        → position_result(upload output) + signal 전체 + sar 전체가 비워진다.
-        → uploaded_sample/uploaded_file_name(방금 set한 새 input)은 유지된다.
+    "뒤에 있는 것"이 아니라 "나에게 의존하는 것"이 기준이다.
+    예) invalidate_from("signal")은 record만 비운다. sar_setup과 sar는
+        signal에 의존하지 않으므로 POSITION을 바꿔도 살아남는다.
 
-    새 stage나 새 결과 key를 추가해도 이 함수는 수정할 필요가 없다.
+    새 stage를 추가해도 이 함수는 수정할 필요가 없다.
+    스키마에 depends_on만 적으면 된다.
     """
-    idx = STAGE_ORDER.index(stage)
-
     # 현재 stage: output만 비운다 (input은 방금 갱신했으므로 보존)
     _reset_keys(_stage_output(stage))
 
-    # 이후 stage: input + output 전부 비운다
-    for downstream in STAGE_ORDER[idx + 1:]:
-        _reset_keys(_stage_all(downstream))
-
-
-def reset_stage(stage: str) -> None:
-    """특정 stage 하나만 input/output 통째로 비운다."""
-    _reset_keys(_stage_all(stage))
+    # 나에게 의존하는 stage: input + output 전부 비운다
+    for dependent in _dependents_of(stage):
+        _reset_keys(_stage_all(dependent))
 
 
 # ============================================================
@@ -211,14 +236,6 @@ def get_current_sample() -> dict | None:
 
 def has_current_sample() -> bool:
     return has_value(UPLOADED_SAMPLE_KEY)
-
-
-def get_uploaded_file_name() -> str | None:
-    return get_value(UPLOADED_FILE_NAME_KEY)
-
-
-def get_uploaded_file_hash() -> str | None:
-    return get_value(UPLOADED_FILE_HASH_KEY)
 
 
 def is_new_uploaded_file(uploaded_file_name: str, file_hash: str) -> bool:
@@ -261,15 +278,17 @@ def has_position_result() -> bool:
 # ============================================================
 
 def set_selected_signal_position(position: int) -> None:
+    """
+    확인할 POSITION을 저장하고, 여기에 의존하는 결과를 무효화한다.
+
+    POSITION이 바뀌면 그 POSITION의 record 목록과 곡선 그림은 무의미해진다.
+    반면 signal_params와 SAR 결과는 signal에 의존하지 않으므로 살아남는다.
+    """
+    changed = get_value(SELECTED_SIGNAL_POSITION_KEY) != position
     set_value(SELECTED_SIGNAL_POSITION_KEY, position)
 
-
-def get_selected_signal_position() -> int | None:
-    return get_value(SELECTED_SIGNAL_POSITION_KEY)
-
-
-def has_selected_signal_position() -> bool:
-    return has_value(SELECTED_SIGNAL_POSITION_KEY)
+    if changed:
+        invalidate_from("signal")
 
 
 def set_rlum_records(records: dict) -> None:
@@ -285,15 +304,16 @@ def has_rlum_records() -> bool:
 
 
 def set_selected_record_info(record_info: dict) -> None:
+    """
+    확인할 record를 저장하고, 여기에 의존하는 결과를 무효화한다.
+
+    record가 바뀌면 그 record로 그린 곡선 그림만 무의미해진다.
+    """
+    changed = get_value(SELECTED_RECORD_INFO_KEY) != record_info
     set_value(SELECTED_RECORD_INFO_KEY, record_info)
 
-
-def get_selected_record_info() -> dict | None:
-    return get_value(SELECTED_RECORD_INFO_KEY)
-
-
-def has_selected_record_info() -> bool:
-    return has_value(SELECTED_RECORD_INFO_KEY)
+    if changed:
+        invalidate_from("record")
 
 
 def set_rlum_record_plot_result(result: dict) -> None:
@@ -309,7 +329,29 @@ def has_rlum_record_plot_result() -> bool:
 
 
 def set_signal_params(params: dict) -> None:
+    """
+    SAR 파라미터를 저장한다.
+
+    파라미터가 실제로 바뀌었을 때만 다운스트림(sar)을 무효화한다.
+    integral이 바뀌면 기존 SAR 결과의 De는 다른 조건으로 계산된 값이므로
+    화면에 남아 있으면 안 된다.
+
+    같은 값으로 다시 저장하는 경우까지 무효화하면 수 분짜리 SAR 실행 결과를
+    이유 없이 날리게 되므로 비교 후 분기한다.
+
+    dict 전체가 아니라 DE_AFFECTING_PARAMS만 비교한다. params의 reference_*
+    항목은 "어느 POSITION의 곡선을 보고 정했는지" 기록용이라 화면 표시에만
+    쓰이고 run_sar_analysis에는 전달되지 않는다 (sar_tab.py의 실행부 참고).
+    다른 record를 둘러보다 같은 integral로 다시 저장했을 때 SAR 결과가
+    날아가면 안 된다.
+    """
+    old = get_signal_params() or {}
+    changed = any(old.get(k) != params.get(k) for k in DE_AFFECTING_PARAMS)
+
     set_value(SIGNAL_PARAMS_KEY, params)
+
+    if changed:
+        invalidate_from("sar_setup")
 
 
 def get_signal_params() -> dict | None:
@@ -321,11 +363,16 @@ def has_signal_params() -> bool:
 
 
 def set_sar_target_positions(positions: list[int]) -> None:
+    """
+    SAR 분석 대상 POSITION을 저장한다.
+
+    이 호출은 곧 재실행이 시작된다는 뜻이므로 옛 SAR 결과를 먼저 버린다.
+    분석이 예외로 실패했을 때 이전 실행의 De 표가 화면에 남는 것을 막는다.
+    (signal_params와 달리 값 비교 가드를 두지 않는다. 같은 POSITION으로
+     다시 실행하는 경우에도 결과는 새로 계산되기 때문이다.)
+    """
     set_value(SAR_TARGET_POSITIONS_KEY, positions)
-
-
-def get_sar_target_positions() -> list[int] | None:
-    return get_value(SAR_TARGET_POSITIONS_KEY)
+    invalidate_from("sar")
 
 
 def set_sar_result(result: dict) -> None:
@@ -340,70 +387,9 @@ def has_sar_result() -> bool:
     return has_value(SAR_RESULT_KEY)
 
 
-def reset_signal_state() -> None:
-    """
-    Signal/Record/SAR setup 상태를 초기화한다.
-
-    새 파일 업로드처럼 signal 분석 전체를 다시 시작해야 할 때 사용한다.
-    """
-    reset_stage("signal")
-    reset_stage("record")
-    reset_stage("sar_setup")
-    reset_stage("sar")
-
-
-def reset_signal_position_outputs() -> None:
-    """
-    POSITION이 바뀌었을 때 POSITION에 종속된 상태만 초기화한다.
-
-    초기화:
-        rlum_records
-        selected_record_info
-        rlum_record_plot_result
-
-    유지:
-        selected_signal_position
-        signal_params
-
-    signal_params는 여러 POSITION/record plot을 보고 정하는
-    전역 SAR 설정값이므로 POSITION 변경만으로 지우지 않는다.
-    """
-    _reset_keys(_stage_output("signal"))
-    reset_stage("record")
-
-
-def reset_selected_record_outputs() -> None:
-    """
-    선택 record가 바뀌었을 때 record에 종속된 plot만 초기화한다.
-
-    유지:
-        rlum_records
-        selected_record_info
-        signal_params
-    """
-    _reset_keys(_stage_output("record"))
-
-
-def reset_signal_record_state() -> None:
-    """
-    기존 signal_tab.py 호출부 호환용 wrapper.
-
-    새 코드에서는 reset_signal_position_outputs()를 직접 쓰는 편이 더 명확하다.
-    """
-    reset_signal_position_outputs()
-
 # ============================================================
 # 9. 전체 리셋
 # ============================================================
-
-def reset_upload_state() -> None:
-    """
-    Upload 단계 전체(input/output)를 비운다.
-    그에 딸린 다운스트림(signal, sar)도 함께 무효화한다.
-    """
-    reset_stage("upload")
-    invalidate_from("upload")
-
 
 def reset_all_state() -> None:
     """
@@ -411,5 +397,98 @@ def reset_all_state() -> None:
 
     주의: st.session_state 전체를 지우지 않는다.
     (위젯 key, 채팅/에이전트 상태 등 이 모듈 밖의 상태까지 날리지 않기 위함)
+    파이프라인 위젯은 스키마 상태에서 identity가 파생되므로 함께 초기화된다.
     """
     _reset_keys(_all_defaults())
+
+
+# ============================================================
+# 10. 셀프 체크
+# ============================================================
+# 분기가 있는 로직이므로 최소 확인 하나를 남긴다.
+# 실행: venv/bin/python app/utils/state_manager.py
+
+if __name__ == "__main__":
+    init_session_state()
+
+    # depends_on에 오타가 나면 그 stage는 아무에게도 무효화되지 않고
+    # 조용히 옛 값을 들고 있게 된다. 이 모듈이 막으려는 바로 그 상황이라
+    # 이름이 실제 stage인지부터 확인한다.
+    for _name, _spec in SESSION_SCHEMA.items():
+        for _dep in _spec["depends_on"]:
+            assert _dep in SESSION_SCHEMA, \
+                f"{_name}의 depends_on에 없는 stage '{_dep}'이 적혀 있다"
+
+    # 스키마 key와 위젯 key가 겹치면, 위젯이 그려진 뒤 _reset_keys가 그 key를 건드리는
+    # 순간 Streamlit이 예외를 던지며 앱이 죽는다. 목록을 손으로 관리하면 어차피 어긋나므로
+    # 탭 소스에서 key= 문자열을 직접 긁어 확인한다.
+    import re
+    from pathlib import Path
+
+    _tab_dir = Path(__file__).resolve().parent.parent / "tabs"
+    _tab_src = "".join(f.read_text(encoding="utf-8") for f in _tab_dir.glob("*.py"))
+    _collisions = set(re.findall(r"""key\s*=\s*["']([^"']+)["']""", _tab_src)) & set(_all_defaults())
+    assert not _collisions, f"스키마 key가 위젯 key로도 쓰이고 있다: {sorted(_collisions)}"
+
+    # 의존 그래프가 의도한 모양인지 먼저 확인한다.
+    # 이게 틀리면 아래 무효화 동작은 전부 의미가 없다.
+    assert _dependents_of("upload") == ["signal", "record", "sar_setup", "sar"], \
+        "새 파일 업로드는 모든 단계를 무효화해야 한다"
+    assert _dependents_of("signal") == ["record"], \
+        "POSITION 변경이 SAR까지 건드리면 안 된다"
+    assert _dependents_of("record") == [], \
+        "record 선택 변경은 자기 그림 외에 아무것도 건드리지 않는다"
+    assert _dependents_of("sar_setup") == ["sar"], \
+        "integral 변경은 SAR 결과를 무효화해야 한다"
+    assert _dependents_of("sar") == [], \
+        "sar 뒤에는 아직 아무 단계도 없다"
+
+    # POSITION을 바꿔도 integral과 SAR 결과는 살아남아야 한다 (예외 함수를
+    # 손으로 만들었던 이유. 이제 규칙에서 자동으로 나온다)
+    set_value(SIGNAL_PARAMS_KEY, {"signal_integral": "1:2"})
+    set_value(SAR_RESULT_KEY, {"de": 42})
+    set_value(RLUM_RECORDS_KEY, {"record_index": [1]})
+    set_selected_signal_position(99)
+
+    assert get_value(SIGNAL_PARAMS_KEY) == {"signal_integral": "1:2"}, \
+        "POSITION 변경에 integral 설정이 날아갔다"
+    assert get_value(SAR_RESULT_KEY) == {"de": 42}, \
+        "POSITION 변경에 SAR 결과가 날아갔다"
+    assert get_value(RLUM_RECORDS_KEY) is None, \
+        "POSITION이 바뀌었는데 옛 record 목록이 남아 있다"
+
+    # 새 파일 업로드는 반대로 전부 날려야 한다
+    set_current_sample({"raw_path": "x"}, "a.bin", "hash1")
+    assert get_value(SIGNAL_PARAMS_KEY) is None, \
+        "새 파일인데 옛 integral 설정이 남아 있다"
+    assert get_value(SAR_RESULT_KEY) is None, \
+        "새 파일인데 옛 SAR 결과가 남아 있다"
+
+    # 위에서 상태를 어지럽혔으므로 다시 초기화하고 이어서 확인한다
+    _reset_keys(_all_defaults())
+
+    p1 = {"reference_position": 1, "signal_integral": "1:2", "background_integral": "900:1000"}
+    p2 = {"reference_position": 7, "signal_integral": "1:2", "background_integral": "900:1000"}
+    p3 = {"reference_position": 7, "signal_integral": "1:5", "background_integral": "900:1000"}
+
+    set_signal_params(p1)
+    set_value(SAR_RESULT_KEY, {"de": 100})
+
+    # 같은 값 재저장 -> SAR 결과 유지
+    set_signal_params(p1)
+    assert get_sar_result() == {"de": 100}, "같은 파라미터 재저장에 결과가 날아갔다"
+
+    # reference_*만 변경 -> De에 영향 없으므로 SAR 결과 유지
+    set_signal_params(p2)
+    assert get_sar_result() == {"de": 100}, "reference_* 변경만으로 SAR 결과가 날아갔다"
+
+    # integral 변경 -> SAR 결과 무효화
+    set_signal_params(p3)
+    assert get_sar_result() is None, "integral이 바뀌었는데 옛 SAR 결과가 남아 있다"
+
+    # SAR 재실행 시작 -> 옛 결과는 버린다
+    set_value(SAR_RESULT_KEY, {"de": 200})
+    set_sar_target_positions([1, 2, 3])
+    assert get_sar_result() is None, "SAR 재실행 시작인데 옛 결과가 남아 있다"
+
+    print("state_manager self-check OK")
