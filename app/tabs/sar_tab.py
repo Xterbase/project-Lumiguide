@@ -94,6 +94,8 @@ def _render_position_detail(result: dict) -> None:
     aliquots = result["aliquots"]
     by_position = {a["position"]: a for a in aliquots}
 
+    # 값은 aliquot이 아니라 POSITION 번호이고 조회는 항상 현재 result로 하므로,
+    # key를 둬도 옛 결과를 가리키지 않는다.
     selected = st.selectbox(
         "POSITION 상세",
         options=sorted(by_position.keys()),
@@ -203,7 +205,6 @@ def render_sar_tab() -> None:
         default=[],
         placeholder="(선택 안 함)",
         help="De 분포를 만들려면 aliquot이 여러 개 필요합니다.",
-        key="sar_target_positions_input",
     )
 
     if SELECT_ALL in picked:

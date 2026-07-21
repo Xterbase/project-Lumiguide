@@ -196,22 +196,24 @@ def render_signal_tab():
 
     st.subheader("Integral 설정")
 
+    # 기본값을 저장 상태에서 끌어온다. 새 업로드가 signal_params를 비우면
+    # value=가 바뀌어 위젯 identity가 갱신되고, 이전 파일의 integral이 박스에 남지 않는다.
+    saved = get_signal_params() or {}
+
     col_signal, col_background = st.columns(2)
 
     with col_signal:
         signal_integral = st.text_input(
             "Signal integral",
-            value="1:2",
+            value=saved.get("signal_integral", "1:2"),
             help="예: 1:2 또는 450:500",
-            key="signal_integral_input",
         )
 
     with col_background:
         background_integral = st.text_input(
             "Background integral",
-            value="900:1000",
+            value=saved.get("background_integral", "900:1000"),
             help="예: 900:1000",
-            key="background_integral_input",
         )
 
     if st.button("현재 파라미터 저장"):

@@ -409,6 +409,7 @@ def reset_all_state() -> None:
 
     주의: st.session_state 전체를 지우지 않는다.
     (위젯 key, 채팅/에이전트 상태 등 이 모듈 밖의 상태까지 날리지 않기 위함)
+    파이프라인 위젯은 스키마 상태에서 identity가 파생되므로 함께 초기화된다.
     """
     _reset_keys(_all_defaults())
 
@@ -429,6 +430,17 @@ if __name__ == "__main__":
         for _dep in _spec["depends_on"]:
             assert _dep in SESSION_SCHEMA, \
                 f"{_name}의 depends_on에 없는 stage '{_dep}'이 적혀 있다"
+
+    # 스키마 key와 위젯 key가 겹치면, 위젯이 그려진 뒤 _reset_keys가 그 key를 건드리는
+    # 순간 Streamlit이 예외를 던지며 앱이 죽는다. 목록을 손으로 관리하면 어차피 어긋나므로
+    # 탭 소스에서 key= 문자열을 직접 긁어 확인한다.
+    import re
+    from pathlib import Path
+
+    _tab_dir = Path(__file__).resolve().parent.parent / "tabs"
+    _tab_src = "".join(f.read_text(encoding="utf-8") for f in _tab_dir.glob("*.py"))
+    _collisions = set(re.findall(r"""key\s*=\s*["']([^"']+)["']""", _tab_src)) & set(_all_defaults())
+    assert not _collisions, f"스키마 key가 위젯 key로도 쓰이고 있다: {sorted(_collisions)}"
 
     # 의존 그래프가 의도한 모양인지 먼저 확인한다.
     # 이게 틀리면 아래 무효화 동작은 전부 의미가 없다.
