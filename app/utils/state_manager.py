@@ -22,6 +22,10 @@ SIGNAL_PARAMS_KEY = "signal_params"
 SAR_TARGET_POSITIONS_KEY = "sar_target_positions"
 SAR_RESULT_KEY = "sar_result"
 
+# signal_params 중 De 값을 실제로 바꾸는 항목.
+# 나머지(reference_*)는 출처 기록용이라 바뀌어도 SAR 결과는 유효하다.
+DE_AFFECTING_PARAMS = ("signal_integral", "background_integral")
+
 
 
 # ============================================================
@@ -213,14 +217,6 @@ def has_current_sample() -> bool:
     return has_value(UPLOADED_SAMPLE_KEY)
 
 
-def get_uploaded_file_name() -> str | None:
-    return get_value(UPLOADED_FILE_NAME_KEY)
-
-
-def get_uploaded_file_hash() -> str | None:
-    return get_value(UPLOADED_FILE_HASH_KEY)
-
-
 def is_new_uploaded_file(uploaded_file_name: str, file_hash: str) -> bool:
     """
     현재 업로드된 파일이 기존 파일과 다른지 확인한다.
@@ -268,10 +264,6 @@ def get_selected_signal_position() -> int | None:
     return get_value(SELECTED_SIGNAL_POSITION_KEY)
 
 
-def has_selected_signal_position() -> bool:
-    return has_value(SELECTED_SIGNAL_POSITION_KEY)
-
-
 def set_rlum_records(records: dict) -> None:
     set_value(RLUM_RECORDS_KEY, records)
 
@@ -292,10 +284,6 @@ def get_selected_record_info() -> dict | None:
     return get_value(SELECTED_RECORD_INFO_KEY)
 
 
-def has_selected_record_info() -> bool:
-    return has_value(SELECTED_RECORD_INFO_KEY)
-
-
 def set_rlum_record_plot_result(result: dict) -> None:
     set_value(RLUM_RECORD_PLOT_RESULT_KEY, result)
 
@@ -309,7 +297,29 @@ def has_rlum_record_plot_result() -> bool:
 
 
 def set_signal_params(params: dict) -> None:
+    """
+    SAR 파라미터를 저장한다.
+
+    파라미터가 실제로 바뀌었을 때만 다운스트림(sar)을 무효화한다.
+    integral이 바뀌면 기존 SAR 결과의 De는 다른 조건으로 계산된 값이므로
+    화면에 남아 있으면 안 된다.
+
+    같은 값으로 다시 저장하는 경우까지 무효화하면 수 분짜리 SAR 실행 결과를
+    이유 없이 날리게 되므로 비교 후 분기한다.
+
+    dict 전체가 아니라 DE_AFFECTING_PARAMS만 비교한다. params의 reference_*
+    항목은 "어느 POSITION의 곡선을 보고 정했는지" 기록용이라 화면 표시에만
+    쓰이고 run_sar_analysis에는 전달되지 않는다 (sar_tab.py의 실행부 참고).
+    다른 record를 둘러보다 같은 integral로 다시 저장했을 때 SAR 결과가
+    날아가면 안 된다.
+    """
+    old = get_signal_params() or {}
+    changed = any(old.get(k) != params.get(k) for k in DE_AFFECTING_PARAMS)
+
     set_value(SIGNAL_PARAMS_KEY, params)
+
+    if changed:
+        invalidate_from("sar_setup")
 
 
 def get_signal_params() -> dict | None:
@@ -321,7 +331,16 @@ def has_signal_params() -> bool:
 
 
 def set_sar_target_positions(positions: list[int]) -> None:
+    """
+    SAR 분석 대상 POSITION을 저장한다.
+
+    이 호출은 곧 재실행이 시작된다는 뜻이므로 옛 SAR 결과를 먼저 버린다.
+    분석이 예외로 실패했을 때 이전 실행의 De 표가 화면에 남는 것을 막는다.
+    (signal_params와 달리 값 비교 가드를 두지 않는다. 같은 POSITION으로
+     다시 실행하는 경우에도 결과는 새로 계산되기 때문이다.)
+    """
     set_value(SAR_TARGET_POSITIONS_KEY, positions)
+    invalidate_from("sar")
 
 
 def get_sar_target_positions() -> list[int] | None:
@@ -338,18 +357,6 @@ def get_sar_result() -> dict | None:
 
 def has_sar_result() -> bool:
     return has_value(SAR_RESULT_KEY)
-
-
-def reset_signal_state() -> None:
-    """
-    Signal/Record/SAR setup 상태를 초기화한다.
-
-    새 파일 업로드처럼 signal 분석 전체를 다시 시작해야 할 때 사용한다.
-    """
-    reset_stage("signal")
-    reset_stage("record")
-    reset_stage("sar_setup")
-    reset_stage("sar")
 
 
 def reset_signal_position_outputs() -> None:
@@ -384,26 +391,9 @@ def reset_selected_record_outputs() -> None:
     _reset_keys(_stage_output("record"))
 
 
-def reset_signal_record_state() -> None:
-    """
-    기존 signal_tab.py 호출부 호환용 wrapper.
-
-    새 코드에서는 reset_signal_position_outputs()를 직접 쓰는 편이 더 명확하다.
-    """
-    reset_signal_position_outputs()
-
 # ============================================================
 # 9. 전체 리셋
 # ============================================================
-
-def reset_upload_state() -> None:
-    """
-    Upload 단계 전체(input/output)를 비운다.
-    그에 딸린 다운스트림(signal, sar)도 함께 무효화한다.
-    """
-    reset_stage("upload")
-    invalidate_from("upload")
-
 
 def reset_all_state() -> None:
     """
@@ -413,3 +403,39 @@ def reset_all_state() -> None:
     (위젯 key, 채팅/에이전트 상태 등 이 모듈 밖의 상태까지 날리지 않기 위함)
     """
     _reset_keys(_all_defaults())
+
+
+# ============================================================
+# 10. 셀프 체크
+# ============================================================
+# 분기가 있는 로직이므로 최소 확인 하나를 남긴다.
+# 실행: venv/bin/python app/utils/state_manager.py
+
+if __name__ == "__main__":
+    init_session_state()
+
+    p1 = {"reference_position": 1, "signal_integral": "1:2", "background_integral": "900:1000"}
+    p2 = {"reference_position": 7, "signal_integral": "1:2", "background_integral": "900:1000"}
+    p3 = {"reference_position": 7, "signal_integral": "1:5", "background_integral": "900:1000"}
+
+    set_signal_params(p1)
+    set_value(SAR_RESULT_KEY, {"de": 100})
+
+    # 같은 값 재저장 -> SAR 결과 유지
+    set_signal_params(p1)
+    assert get_sar_result() == {"de": 100}, "같은 파라미터 재저장에 결과가 날아갔다"
+
+    # reference_*만 변경 -> De에 영향 없으므로 SAR 결과 유지
+    set_signal_params(p2)
+    assert get_sar_result() == {"de": 100}, "reference_* 변경만으로 SAR 결과가 날아갔다"
+
+    # integral 변경 -> SAR 결과 무효화
+    set_signal_params(p3)
+    assert get_sar_result() is None, "integral이 바뀌었는데 옛 SAR 결과가 남아 있다"
+
+    # SAR 재실행 시작 -> 옛 결과는 버린다
+    set_value(SAR_RESULT_KEY, {"de": 200})
+    set_sar_target_positions([1, 2, 3])
+    assert get_sar_result() is None, "SAR 재실행 시작인데 옛 결과가 남아 있다"
+
+    print("state_manager self-check OK")

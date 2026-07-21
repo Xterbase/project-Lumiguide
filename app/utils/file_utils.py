@@ -355,6 +355,8 @@ def save_sar_results(analysis_results_dir: Path, result: dict) -> dict:
         sar_rejected_de.csv     FAILED인 것
         sar_failed_positions.csv  분석 자체가 실패한 POSITION과 사유
 
+        모든 CSV에는 signal_integral / background_integral 컬럼이 붙는다.
+
     반환: {이름: 저장 경로} — 실제로 저장한 것만 담는다.
     """
 
@@ -371,6 +373,18 @@ def save_sar_results(analysis_results_dir: Path, result: dict) -> dict:
         "failed": (result.get("failed"), "sar_failed_positions.csv"),
     }
 
+    # 이번 실행에서 비어 있는 표는 아래 루프가 파일을 만들지 않는다.
+    # 먼저 지우지 않으면 지난 실행 파일이 남아 서로 다른 실행의 결과가
+    # 한 폴더에 섞인다.
+    for _, file_name in tables.values():
+        (analysis_results_dir / file_name).unlink(missing_ok=True)
+
+    # CSV만 봐도 어느 integral로 계산한 De인지 알 수 있어야 한다.
+    # 이 값은 원본 데이터 파일에 기록되지 않고 De를 ~15% 움직이므로,
+    # 빠지면 저장된 결과를 재현할 수 없다.
+    signal_integral = ":".join(str(v) for v in result.get("signal_integral") or [])
+    background_integral = ":".join(str(v) for v in result.get("background_integral") or [])
+
     saved = {}
 
     for name, (rows, file_name) in tables.items():
@@ -380,7 +394,10 @@ def save_sar_results(analysis_results_dir: Path, result: dict) -> dict:
             continue
 
         file_path = analysis_results_dir / file_name
-        pd.DataFrame(rows).to_csv(file_path, index=False, encoding="utf-8-sig")
+        df = pd.DataFrame(rows)
+        df["signal_integral"] = signal_integral
+        df["background_integral"] = background_integral
+        df.to_csv(file_path, index=False, encoding="utf-8-sig")
         saved[name] = file_path
 
     return saved
@@ -397,3 +414,41 @@ def delete_sample(sample_dir: Path) -> None:
 
     if sample_dir.exists() and sample_dir.is_dir():
         shutil.rmtree(sample_dir)
+
+
+# ============================================================
+# 셀프 체크
+# ============================================================
+# 파일을 지우는 로직이 들어 있으므로 최소 확인 하나를 남긴다.
+# 실행: venv/bin/python app/utils/file_utils.py
+
+if __name__ == "__main__":
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out = Path(tmp)
+
+        run1 = {
+            "signal_integral": [1, 2],
+            "background_integral": [900, 1000],
+            "aliquots": [{"position": 1, "de": 50.0}],
+            "rejected": [{"position": 2, "de": 10.0}],
+        }
+        save_sar_results(out, run1)
+        assert (out / "sar_rejected_de.csv").exists(), "1차 실행 파일이 생성되지 않았다"
+
+        # 2차 실행: rejected가 비었으므로 1차 파일이 남으면 안 된다
+        run2 = {
+            "signal_integral": [1, 5],
+            "background_integral": [900, 1000],
+            "aliquots": [{"position": 1, "de": 60.0}],
+            "rejected": [],
+        }
+        save_sar_results(out, run2)
+        assert not (out / "sar_rejected_de.csv").exists(), "지난 실행 파일이 남아 있다"
+
+        text = (out / "sar_de_table.csv").read_text(encoding="utf-8-sig")
+        assert "signal_integral" in text, "integral 컬럼이 CSV에 없다"
+        assert "1:5" in text, "2차 실행의 integral 값이 기록되지 않았다"
+
+    print("file_utils self-check OK")
