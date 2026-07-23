@@ -15,6 +15,9 @@ __pycache__/
 # 생성된 결과물 (필요하면 이 줄을 지우세요)
 outputs/
 
+# ExampleData.rda를 가공해 만든 로컬 테스트용 .bin 파일 (커밋하지 않기로 함)
+test_data/
+
 # 에디터/IDE 설정
 .vscode/
 .idea/

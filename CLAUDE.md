@@ -209,10 +209,14 @@ automatically would insert one more judgement that changes the result while leav
 record of itself — the exact problem this project exists to reduce. Whether the De
 distribution stage should keep that stance is still open (see the planning doc).
 
-Verification baseline, useful for spotting drift: `ExampleData.rda` has 24 POSITIONs; a
-clean SAR run yields 24/24 analysed, 22 passing QC (POSITION 8 and 11 fail), De spanning
-684–1905 Gy with a coefficient of variation around 17%. `r_runner.py`'s self-check asserts
-per-POSITION De ranges from this baseline.
+Verification baseline, useful for spotting drift: the Luminescence package's own
+`ExampleData.BINfileData` (`CWOSL.SAR.Data`) has 24 POSITIONs; a clean SAR run yields 24/24
+analysed, 22 passing QC (POSITION 8 and 11 fail), De spanning 684–1905 Gy with a coefficient
+of variation around 17%. `r_runner.py`'s self-check asserts per-POSITION De ranges from this
+baseline — `_write_fixture()` regenerates it from the installed package, so the baseline
+needs no committed data file and cannot drift out of sync with a stale copy. Local test
+inputs (`test_data/`, including hand-made multi-GRAIN and subset `.bin` files) are
+gitignored; they are for manual upload testing, not for the self-check.
 
 Open issues carried between sessions live in one place: the issue list in
 `멀티에이전트_계획.txt` (local-only, not in git). Check it before picking up work, and keep
