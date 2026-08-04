@@ -26,6 +26,7 @@ if str(APP_DIR) not in sys.path:
 from tabs.upload_tab import render_upload_tab
 from tabs.signal_tab import render_signal_tab
 from tabs.sar_tab import render_sar_tab
+from tabs.de_tab import render_de_tab
 from utils.state_manager import init_session_state, reset_all_state
 
 
@@ -159,8 +160,7 @@ with tab_sar:
 
 
 with tab_de:
-    st.header("4. De Distribution")
-    st.info("SAR 결과의 De 분포 분석 기능은 다음 단계에서 연결합니다.")
+    render_de_tab()
 
 
 with tab_model:

@@ -96,6 +96,11 @@ def r_scalar_str(r_vector) -> str | None:
     return values[0] if values else None
 
 
+def r_scalar_float(r_vector) -> float | None:
+    values = r_float_list(r_vector)
+    return values[0] if values else None
+
+
 # ========================================================================================================================
 
 # version1: upload data
@@ -423,6 +428,121 @@ def run_sar_analysis(
     }
 
 
+# version4: De distribution analysis
+def analyse_de_distribution(
+    de: list[float],
+    de_error: list[float],
+    output_dir: str | Path | None = None,
+    sigmab: float = 0.15,
+    prefix: str = "de_dist",
+) -> dict:
+    """
+    De 값 분포의 특성(과분산/왜도/첨도)을 계산하고, FMM 성분 수별 BIC 비교로
+    다봉성 근거를 낸다. output_dir이 있으면 radial/abanico plot도 저장한다.
+
+    R pipeline:
+    - analyse_de_distribution(de, de_error, output_dir, prefix): 분포 지표 + plot
+    - fit_finite_mixture(de, de_error, sigmab): 성분 수별 BIC (다봉성 판정용)
+
+    통계는 여기까지가 R 몫이다. 이 지표를 CAM/MAM/FMM으로 매핑하는 결정 로직은
+    model_recommend.recommend_age_model(순수 파이썬)이 담당하며, 호출부(탭)에서
+    이 함수 결과를 그 함수에 넘긴다. r_runner는 R 브리지에 머문다.
+
+    FMM 적합은 실패할 수 있다(유효 De < 4개, 수렴 실패 등). 그때는 분포 지표는
+    그대로 두고 fmm=None, fmm_error에 사유를 담아 돌려준다 — 다봉성만 판정하지
+    못할 뿐 CAM/MAM 판단은 지표만으로 가능하기 때문이다.
+
+    Python return:
+    - 분포 지표(dict) + sigmab + "fmm"(BIC 비교 dict 또는 None) + "fmm_error"
+    """
+    load_r_pipeline()
+
+    if len(de) != len(de_error):
+        raise ValueError(
+            f"De 값과 오차의 개수가 다릅니다: {len(de)} vs {len(de_error)}"
+        )
+
+    if output_dir is not None:
+        output_dir = Path(output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        r_output_dir = output_dir.as_posix()
+    else:
+        r_output_dir = ro.NULL
+
+    with R_LOCK:
+        with default_converter.context():
+            r_de = ro.FloatVector(
+                [float("nan") if x is None else float(x) for x in de]
+            )
+            r_de_error = ro.FloatVector(
+                [float("nan") if x is None else float(x) for x in de_error]
+            )
+
+            result = ro.r["analyse_de_distribution"](
+                r_de,
+                r_de_error,
+                r_output_dir,
+                str(prefix),
+            )
+
+            descriptors = {
+                "n": r_scalar_int(result.rx2("n")),
+                "n_dropped": r_scalar_int(result.rx2("n_dropped")),
+                "central_de": r_scalar_float(result.rx2("central_de")),
+                "central_de_error": r_scalar_float(result.rx2("central_de_error")),
+                "od_abs": r_scalar_float(result.rx2("od_abs")),
+                "od_abs_error": r_scalar_float(result.rx2("od_abs_error")),
+                "od_rel": r_scalar_float(result.rx2("od_rel")),
+                "od_rel_error": r_scalar_float(result.rx2("od_rel_error")),
+                "skewness": r_scalar_float(result.rx2("skewness")),
+                "skewness_weighted": r_scalar_float(result.rx2("skewness_weighted")),
+                "kurtosis": r_scalar_float(result.rx2("kurtosis")),
+                "mean_de": r_scalar_float(result.rx2("mean_de")),
+                "median_de": r_scalar_float(result.rx2("median_de")),
+                "sd_rel": r_scalar_float(result.rx2("sd_rel")),
+                "radial_plot_file": r_scalar_str(result.rx2("radial_plot_file")),
+                "abanico_plot_file": r_scalar_str(result.rx2("abanico_plot_file")),
+            }
+
+            # FMM은 실패할 수 있으므로 분포 지표와 분리해서 감싼다. 위 분포 지표는
+            # 이미 파이썬 값으로 뽑혔으므로 FMM이 실패해도 영향받지 않는다.
+            try:
+                fmm_result = ro.r["fit_finite_mixture"](
+                    r_de,
+                    r_de_error,
+                    float(sigmab),
+                )
+
+                fmm = {
+                    "sigmab": r_scalar_float(fmm_result.rx2("sigmab")),
+                    "single_bic": r_scalar_float(fmm_result.rx2("single_bic")),
+                    "k": r_int_list(fmm_result.rx2("k")),
+                    "bic": r_float_list(fmm_result.rx2("bic")),
+                    "best_k": r_scalar_int(fmm_result.rx2("best_k")),
+                    "best_bic": r_scalar_float(fmm_result.rx2("best_bic")),
+                    "delta_bic": r_scalar_float(fmm_result.rx2("delta_bic")),
+                }
+                # 특이행렬/미수렴 시 calc_FiniteMixture는 예외 대신 NA BIC를 돌려주고,
+                # 그러면 위 필드가 전부 None인 dict가 만들어진다. "fmm은 dict-or-None"
+                # 불변식을 지키려 그런 경우를 None으로 접어 준다(추천 로직이 이걸 가정한다).
+                if fmm["delta_bic"] is None or fmm["best_k"] is None:
+                    fmm = None
+                    fmm_error = "FMM 적합 결과가 유효하지 않습니다(특이행렬/미수렴 등)."
+                else:
+                    fmm_error = None
+            except Exception as exc:
+                fmm = None
+                lines = str(exc).strip().splitlines()
+                fmm_error = lines[-1].strip() if lines else "FMM 적합에 실패했습니다."
+
+    return {
+        **descriptors,
+        "sigmab": float(sigmab),
+        "fmm": fmm,
+        "fmm_error": fmm_error,
+    }
+
+
 # ============================================================
 # 셀프 체크
 # ============================================================
@@ -589,6 +709,70 @@ if __name__ == "__main__":
         try:
             run_sar_analysis(fixture, [1, 99], "1:2", "900:1000", sar_dir)
             raise AssertionError("파일에 없는 POSITION인데 예외가 나지 않았다")
+        except AssertionError:
+            raise
+        except Exception:
+            pass
+
+        # --------------------------------------------------------
+        # 7. De 분포 분석 + FMM + 추천 (Phase A)
+        #    ExampleData.DeValues의 검증된 분포로 지표/추천이 그대로인지 본다.
+        #    CA1(n=62):  과분산 34.7%, 대칭, 다봉(ΔBIC 95.5) -> FMM
+        #    BT998(n=25): 과분산 8.0% -> OD 게이트에서 CAM
+        #    이 값들이 흔들리면 Luminescence가 올랐거나 계산이 바뀐 것이다.
+        # --------------------------------------------------------
+        de_dir = tmp_dir / "de"
+        de_dir.mkdir()
+
+        # De 벡터를 R에서 가져온다. 이 with 블록을 빠져나온 뒤에
+        # analyse_de_distribution을 부른다 (Lock은 재진입 불가라 중첩 금지).
+        with R_LOCK:
+            with default_converter.context():
+                ro.r('data("ExampleData.DeValues")')
+                ca1_de = r_float_list(ro.r("ExampleData.DeValues$CA1[[1]]"))
+                ca1_err = r_float_list(ro.r("ExampleData.DeValues$CA1[[2]]"))
+                bt_de = r_float_list(ro.r("ExampleData.DeValues$BT998[[1]]"))
+                bt_err = r_float_list(ro.r("ExampleData.DeValues$BT998[[2]]"))
+
+        ca1 = analyse_de_distribution(ca1_de, ca1_err, output_dir=de_dir,
+                                      sigmab=0.15, prefix="ca1")
+
+        assert ca1["n"] == 62, f"CA1 n: {ca1['n']}"
+        assert 33 < ca1["od_rel"] < 36, \
+            f"CA1 과분산이 실측 범위를 벗어났다: {ca1['od_rel']}"
+        assert -0.2 < ca1["skewness"] < 0.2, f"CA1 왜도: {ca1['skewness']}"
+        assert ca1["fmm"] is not None and ca1["fmm_error"] is None, \
+            f"CA1 FMM 적합이 실패했다: {ca1['fmm_error']}"
+        assert ca1["fmm"]["delta_bic"] > 6, \
+            f"CA1 다봉 근거(ΔBIC)가 약하다: {ca1['fmm']['delta_bic']}"
+
+        # radial/abanico PNG가 실제로 디스크에 쓰였는지 (macOS quartz와 같은 이유)
+        for key in ("radial_plot_file", "abanico_plot_file"):
+            f = Path(ca1[key])
+            assert f.exists() and f.stat().st_size > 0, \
+                f"CA1 {key} PNG가 없거나 비어 있다"
+
+        # 결정 로직까지 이은 전체 사슬. self-check는 app/utils 컨텍스트에서 돌아가므로
+        # model_recommend를 직접 import 한다 (운영 코드는 r_runner가 이걸 import 하지 않는다).
+        from model_recommend import recommend_age_model
+
+        rec_ca1 = recommend_age_model(ca1["od_rel"], ca1["skewness"], ca1["n"], ca1["fmm"])
+        assert rec_ca1["model"] == "FMM", f"CA1 추천이 FMM이 아니다: {rec_ca1['model']}"
+
+        # BT998: OD 게이트에서 CAM. plot 없이 지표만 뽑는 경로도 함께 확인.
+        bt = analyse_de_distribution(bt_de, bt_err, sigmab=0.15)
+        assert bt["n"] == 25, f"BT998 n: {bt['n']}"
+        assert 7 < bt["od_rel"] < 9, f"BT998 과분산: {bt['od_rel']}"
+        assert bt["radial_plot_file"] is None, \
+            "output_dir을 안 줬는데 plot 경로가 생겼다"
+
+        rec_bt = recommend_age_model(bt["od_rel"], bt["skewness"], bt["n"], bt["fmm"])
+        assert rec_bt["model"] == "CAM", f"BT998 추천이 CAM이 아니다: {rec_bt['model']}"
+
+        # 유효 De가 3개 미만이면 R에서 막고 예외가 파이썬까지 올라와야 한다.
+        try:
+            analyse_de_distribution([100.0, 200.0], [10.0, 20.0])
+            raise AssertionError("De가 2개인데 예외가 나지 않았다")
         except AssertionError:
             raise
         except Exception:

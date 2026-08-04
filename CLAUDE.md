@@ -58,6 +58,20 @@ This target pipeline is what the `SESSION_SCHEMA` stages in `state_manager.py` a
 status). Capability (2)'s recommendation logic is exactly the still-open "LLM vs
 rule-based" decision noted below, and research reproducibility should weigh on it.
 
+**Planned LLM component: RAG over the luminescence literature.** The current direction —
+not yet finalized, pending a meeting with the domain practitioner — is to OCR luminescence
+papers and technical documents into a corpus, then have an LLM answer questions against
+that corpus to assist the researcher's model choice. Whether the interaction is a free-form
+prompt the researcher types, or something more structured (e.g. the LLM narrating why the
+distribution's stats point to a given model, with citations back to the corpus), is exactly
+what the upcoming meeting is expected to settle — do not assume a chat-prompt UI ahead of
+that. This is assistive, not decisional: it does not change the reproducibility argument
+below, which is about what actually *selects* CAM/MAM/FMM. A RAG-backed explanation layer
+can sit on top of a deterministic rule engine without compromising it — the rules pick the
+model, the LLM explains the pick and lets the researcher interrogate the literature behind
+it. Treat this as the shape of "LLM-based" in the open decision below, not a competing
+third option.
+
 ## Commands
 
 All commands assume the repo root and the project's own virtualenv (Python 3.14):
@@ -197,7 +211,12 @@ pipeline.
 
 On the LLM-vs-rule question, note that reproducibility is the constraint that decides it:
 CAM/MAM/FMM selection criteria are established in the literature, and the same input must
-yield the same model for the result to be publishable. The same logic applies upstream —
+yield the same model for the result to be publishable. The planned RAG component (see
+Product plan above) does not relax this constraint — it is scoped as an explanation/lookup
+layer over the literature corpus, sitting alongside or on top of a deterministic rule
+engine, not a replacement for it. If a future design has the LLM itself choose the model,
+that reopens this constraint and needs its own justification; nothing decided so far
+implies that. The same logic applies upstream —
 signal/background integral choice shifts De by ~15% and is not recorded in the data file,
 which is why `signal_params` is carried into the SAR results rather than left implicit.
 

@@ -21,6 +21,7 @@ RLUM_RECORD_PLOT_RESULT_KEY = "rlum_record_plot_result"
 SIGNAL_PARAMS_KEY = "signal_params"
 SAR_TARGET_POSITIONS_KEY = "sar_target_positions"
 SAR_RESULT_KEY = "sar_result"
+DE_DIST_RESULT_KEY = "de_dist_result"
 
 # signal_params 중 De 값을 실제로 바꾸는 항목.
 # 나머지(reference_*)는 출처 기록용이라 바뀌어도 SAR 결과는 유효하다.
@@ -90,6 +91,17 @@ SESSION_SCHEMA: dict[str, dict] = {
         },
         "output": {
             SAR_RESULT_KEY: None,
+        },
+    },
+    # De 분포 분석 + 모델 추천. 입력은 sar이 내놓은 De 벡터에서 자동 파생되므로
+    # 사용자가 직접 거는 input은 아직 없다({}). 모델 선택/QC 포함여부 같은 값이
+    # 필요해지면 그때 input에 키를 추가한다 (하위 '모델 적용' 단계는 이 stage를
+    # depends_on으로 참조하게 된다).
+    "de_dist": {
+        "depends_on": ["sar"],
+        "input": {},
+        "output": {
+            DE_DIST_RESULT_KEY: None,
         },
     },
 }
@@ -388,6 +400,24 @@ def has_sar_result() -> bool:
 
 
 # ============================================================
+# 8b. De Distribution 단계 wrapper
+# ============================================================
+# de_dist는 사용자 input이 없다. sar 결과에서 파생되는 분석 결과(output)만 있으므로
+# 결과 접근자 3개만 둔다. sar이 무효화되면 이 결과는 자동으로 비워진다.
+
+def set_de_dist_result(result: dict) -> None:
+    set_value(DE_DIST_RESULT_KEY, result)
+
+
+def get_de_dist_result() -> dict | None:
+    return get_value(DE_DIST_RESULT_KEY)
+
+
+def has_de_dist_result() -> bool:
+    return has_value(DE_DIST_RESULT_KEY)
+
+
+# ============================================================
 # 9. 전체 리셋
 # ============================================================
 
@@ -432,16 +462,18 @@ if __name__ == "__main__":
 
     # 의존 그래프가 의도한 모양인지 먼저 확인한다.
     # 이게 틀리면 아래 무효화 동작은 전부 의미가 없다.
-    assert _dependents_of("upload") == ["signal", "record", "sar_setup", "sar"], \
+    assert _dependents_of("upload") == ["signal", "record", "sar_setup", "sar", "de_dist"], \
         "새 파일 업로드는 모든 단계를 무효화해야 한다"
     assert _dependents_of("signal") == ["record"], \
         "POSITION 변경이 SAR까지 건드리면 안 된다"
     assert _dependents_of("record") == [], \
         "record 선택 변경은 자기 그림 외에 아무것도 건드리지 않는다"
-    assert _dependents_of("sar_setup") == ["sar"], \
-        "integral 변경은 SAR 결과를 무효화해야 한다"
-    assert _dependents_of("sar") == [], \
-        "sar 뒤에는 아직 아무 단계도 없다"
+    assert _dependents_of("sar_setup") == ["sar", "de_dist"], \
+        "integral 변경은 SAR 결과와 De 분포 분석을 무효화해야 한다"
+    assert _dependents_of("sar") == ["de_dist"], \
+        "SAR 결과가 바뀌면 De 분포 분석을 무효화해야 한다"
+    assert _dependents_of("de_dist") == [], \
+        "de_dist 뒤에는 아직 아무 단계도 없다"
 
     # POSITION을 바꿔도 integral과 SAR 결과는 살아남아야 한다 (예외 함수를
     # 손으로 만들었던 이유. 이제 규칙에서 자동으로 나온다)
@@ -486,9 +518,12 @@ if __name__ == "__main__":
     set_signal_params(p3)
     assert get_sar_result() is None, "integral이 바뀌었는데 옛 SAR 결과가 남아 있다"
 
-    # SAR 재실행 시작 -> 옛 결과는 버린다
+    # SAR 재실행 시작 -> 옛 SAR 결과 + 거기서 파생된 De 분포 결과까지 함께 버린다
     set_value(SAR_RESULT_KEY, {"de": 200})
+    set_de_dist_result({"recommended_model": "CAM"})
     set_sar_target_positions([1, 2, 3])
     assert get_sar_result() is None, "SAR 재실행 시작인데 옛 결과가 남아 있다"
+    assert get_de_dist_result() is None, \
+        "SAR가 무효화됐는데 옛 De 분포 결과가 남아 있다"
 
     print("state_manager self-check OK")
