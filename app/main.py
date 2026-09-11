@@ -147,22 +147,31 @@ tab_upload, tab_signal, tab_sar, tab_de, tab_model = st.tabs(
 )
 
 
+# on_change="rerun"으로 tabs를 상태 위젯으로 만들었으면 .open으로 골라 렌더링해야
+# 한다. 이걸 빼먹으면 매 rerun마다 5개 탭 본문이 전부 다시 실행되고, 그중 하나가
+# (예: signal 탭의 selectbox) 위젯을 새로 등록/해제하면서 탭 컨테이너가 프론트엔드에서
+# remount되어 다른 탭에서 위젯을 조작해도 화면이 이전 탭으로 튕겨나간다.
 with tab_upload:
-    render_upload_tab(OUTPUT_DIR)
+    if tab_upload.open:
+        render_upload_tab(OUTPUT_DIR)
 
 
 with tab_signal:
-    render_signal_tab()
+    if tab_signal.open:
+        render_signal_tab()
 
 
 with tab_sar:
-    render_sar_tab()
+    if tab_sar.open:
+        render_sar_tab()
 
 
 with tab_de:
-    render_de_tab()
+    if tab_de.open:
+        render_de_tab()
 
 
 with tab_model:
-    st.header("5. Model Recommendation")
-    st.info("De distribution 기반 모델 추천 기능은 다음 단계에서 연결합니다.")
+    if tab_model.open:
+        st.header("5. Model Recommendation")
+        st.info("De distribution 기반 모델 추천 기능은 다음 단계에서 연결합니다.")
