@@ -49,3 +49,11 @@ Rplots.pdf
 # 올리려면 아래 두 줄을 지우면 된다.
 LumiGuide_코드구조_도식.pdf
 LumiGuide_함수흐름도.svg
+
+
+# 측정 데이터는 어디에 있든 절대 커밋하지 않는다 (공개 저장소)
+*.bin
+*.BIN
+*.rda
+*.rdata
+*.RData
